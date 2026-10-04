@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>常见错误速查手册 · doc-agent</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1f2328; --muted:#656d76; --line:#d8dee4;
+    --blue:#0969da; --blue-bg:#ddf4ff; --red:#cf222e; --red-bg:#ffebe9;
+    --green:#1a7f37; --green-bg:#dafbe1; --amber:#9a6700; --amber-bg:#fff8c5;
+    --purple:#8250df; --purple-bg:#fbefff; --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:40px 24px 80px; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+    font-size:15px; line-height:1.75;
+  }
+  .wrap{max-width:900px;margin:0 auto}
+  header{margin-bottom:28px}
+  h1{font-size:27px;font-weight:600;margin:0 0 10px;letter-spacing:-.3px}
+  .meta{color:var(--muted);font-size:13px;display:flex;gap:12px;flex-wrap:wrap}
+  .pill{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:2px 11px;font-size:12px}
+  h2{font-size:19px;font-weight:600;margin:40px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;font-weight:600;margin:0 0 4px}
+  p{margin:8px 0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:16px 0}
+  .lead{background:var(--red-bg);border:1px solid #ff818266;border-left:4px solid var(--red)}
+  .ok{background:var(--green-bg);border:1px solid #4ac26b66;border-left:4px solid var(--green)}
+  .note{background:var(--amber-bg);border:1px solid #d4a72c66;border-left:4px solid var(--amber)}
+  .tip{background:var(--blue-bg);border:1px solid #54aeff66;border-left:4px solid var(--blue)}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;padding:12px 15px;overflow-x:auto;
+      font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:12.5px;line-height:1.6;margin:10px 0}
+  code{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:12.5px;
+       background:var(--code-bg);padding:1.5px 5px;border-radius:4px;border:1px solid var(--line)}
+  pre code{background:none;border:none;padding:0}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--code-bg);font-weight:600;font-size:13px}
+  tbody tr:nth-child(even){background:#fafbfc}
+  .muted{color:var(--muted);font-size:13px}
+  ol,ul{padding-left:22px;margin:8px 0}
+  li{margin:5px 0}
+  .err{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:14px 0;overflow:hidden}
+  .err-head{background:#fafbfc;border-bottom:1px solid var(--line);padding:12px 18px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .tag{font-size:11px;font-weight:600;padding:2px 8px;border-radius:5px;white-space:nowrap}
+  .tag-model{background:var(--purple-bg);color:#6639ba}
+  .tag-db{background:var(--blue-bg);color:#0a5ca8}
+  .tag-code{background:var(--red-bg);color:#a1282a}
+  .tag-env{background:var(--amber-bg);color:#8a6100}
+  .err-body{padding:14px 18px}
+  .err-body p:first-child{margin-top:0}
+  .fix{margin-top:10px;padding-top:10px;border-top:1px dashed var(--line)}
+  .fix strong{color:var(--green)}
+  .kbd{font-size:12px;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:1px 6px;background:var(--card)}
+  footer{margin-top:50px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:12.5px}
+  a{color:var(--blue)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>常见错误速查手册</h1>
+  <div class="meta">
+    <span class="pill">doc-agent</span>
+    <span class="pill">2026-10-04</span>
+    <span class="pill">全部来自真实调试</span>
+  </div>
+</header>
+
+<div class="card tip">
+  <p style="margin-top:0"><strong>这份手册的用法：</strong>报错时先在浏览器里
+  <kbd>Ctrl</kbd>+<kbd>F</kbd> 搜关键字 → 对上号 → 按"怎么修"做。</p>
+  <p style="margin-bottom:0">每一条都是这个项目真实踩过的，不是网上抄的。</p>
+</div>
+
+<h2>第一部分：3 秒定位法</h2>
+
+<p>遇到报错别急着改代码，<strong>先做这三步</strong>，八成的坑两步就能定位。</p>
+
+<div class="card">
+  <h3>第 1 步：读异常的第一行，别读堆栈</h3>
+  <p>堆栈有几十行，真正有用的是<strong>最上面那行</strong>。它已经告诉你"什么东西"和"哪个值"出错了：</p>
+  <table>
+    <tr><th style="width:52%">异常第一行</th><th>它已经告诉你</th></tr>
+    <tr><td><code>Invalid UUID string: 001-...md#0</code></td><td>有东西塞不进 UUID，而且塞的是什么值都写出来了</td></tr>
+    <tr><td><code>ClassCastException: A cannot be cast to B</code></td><td>某处把 A 强行当成 B，搜 A 出现在哪个类</td></tr>
+    <tr><td><code>Port 8081 was already in use</code></td><td>不用查，直接换端口或停旧进程</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h3>第 2 步：判断是"启动时"还是"运行时"</h3>
+  <p>这决定了往哪个方向查：</p>
+  <ul>
+    <li><strong>启动就报错</strong> → 配置问题（Key 没配、数据库连不上、依赖缺失）→ 看 yaml 和环境变量</li>
+    <li><strong>点按钮/提问才报错</strong> → 逻辑问题（格式不匹配、表没建、限速）→ 看具体环节的日志</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>第 3 步：判断是"哪个环节"</h3>
+  <p>本项目一次问答要串行走三段，页面上能看出来：</p>
+  <table>
+    <thead><tr><th style="width:40%">现象</th><th>卡在哪一段</th></tr></thead>
+    <tbody>
+      <tr><td>一直转圈，连"引用来源"都没出现</td><td>意图判定 or 向量检索</td></tr>
+      <tr><td><strong>引用来源出现了</strong>，但正文一个字没有</td><td><strong>回答生成</strong>（对话模型）</td></tr>
+      <tr><td>连"正在思考"都没有，直接报错</td><td>请求没到后端（后端没启动 / 端口不对）</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2>第二部分：错误速查</h2>
+
+<!-- ============ 模型服务类 ============ -->
+<h3 style="margin-top:26px">A · 模型服务类</h3>
+
+<div class="err">
+  <div class="err-head">
+    <span class="tag tag-model">模型</span>
+    <h3>429：请求太频繁 / 速率限制</h3>
+  </div>
+  <div class="err-body">
+    <pre><code>com.openai.errors.RateLimitException: 429: 您的账户已达速率限制，请控制请求频率
+java.lang.IllegalArgumentException: Invalid UUID string: ...  ← 这种情况说明是封装层的错</code></pre>
+    <p><strong>原因：</strong>免费模型都有速率上限。两种情况：</p>
+    <ul>
+      <li><strong>智谱</strong>：免费档<strong>只允许 1 个并发请求</strong>。上一条流式回答没结束就发新的 → 必撞</li>
+      <li><strong>硅基流动</strong>：按 QPS/TPM 限速，点「加载文档」时最密集（80 次请求）</li>
+    </ul>
+    <p class="muted"><strong>怎么判断是哪一个：</strong>看 <code>meta</code> 事件有没有到。有引用来源 = 检索过了 = 挂在对话模型。</p>
+    <div class="fix">
+      <p><strong>怎么修：</strong></p>
+      <ol style="margin-bottom:0">
+        <li>等 10~20 秒再试（限速窗口通常几十秒）</li>
+        <li>等不了就把 <code>application.yaml</code> 里的 <code>doc-agent.embedding.qps</code> 调小（比如 2）</li>
+        <li>老撞就换服务商，见本文最后「换服务商」一节</li>
+      </ol>
+    </div>
+  </div>
+</div>
+
+<div class="err">
+  <div class="err-head">
+    <span class="tag tag-model">模型</span>
+    <h3>401：令牌已过期 / Token is invalid</h3>
+  </div>
+  <div class="err-body">
+    <pre><code>401: 令牌已过期或验证不正确                                        ← 智谱
+{"code":30014,"message":"Token is invalid."}                       ← 硅基流动
+com.openai.errors.UnauthorizedException: 401 ...</code></pre>
+    <p><strong>原因：</strong>Key 没配、拼错了、过期了，或者用了别的服务商的 Key。</p>
+    <p class="muted">两家错误格式完全不同，<strong>看格式就知道是哪一家挂的</strong>：中文句子 = 智谱，JSON = 硅基流动。</p>
+    <div class="fix">
+      <p><strong>怎么修：</strong>检查 IDEA 运行配置的 <span class="kbd">Environment variables</span>：</p>
+      <pre style="margin-bottom:0"><code>ZHIPU_API_KEY=你的智谱Key;SILICONFLOW_API_KEY=你的硅基流动Key</code></pre>
+    </div>
+  </div>
+</div>
+
+<div class="err">
+  <div class="err-head">
+    <span class="tag tag-model">模型</span>
+    <h3>模型名写错 → 404 / 模型不存在</h3>
+  </div>
+  <div class="err-body">
+    <p><strong>原因：</strong>各家模型代码写法差异很大，而且<b>免费版和收费版是两个条目</b>。</p>
+    <table>
+      <thead><tr><th style="width:30%">服务商</th><th>正确写法</th></tr></thead>
+      <tbody>
+        <tr><td>智谱</td><td><code>glm-4.7-flash</code>（全小写）</td></tr>
+        <tr><td>硅基流动 · 国内站</td><td><code>https://api.siliconflow.cn/v1</code></td></tr>
+        <tr><td>硅基流动 · 免费向量模型</td><td><code>BAAI/bge-m3</code>（写成 <code>Pro/BAAI/bge-m3</code> 就是<b>收费版</b>）</td></tr>
+      </tbody>
+    </table>
+    <div class="fix">
+      <p><strong>怎么修：</strong>拿不准就去服务商官网的模型列表页照抄，注意区分
+      <strong>国际站 / 国内站</strong>、<strong>免费版 / 收费版</strong>。</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 数据库类 ============ -->
+<h3 style="margin-top:30px">B · 数据库类</h3>
+
+<div class="err">
+  <div class="err-head">
+    <span class="tag tag-db">数据库</span>
+    <h3>连不上 PostgreSQL</h3>
+  </div>
+  <div class="err-body">
+    <pre><code>Connection refused / could not connect / Communications link failure
+relation "vector_store" does not exist
+Failed to configure a DataSource</code></pre>
+    <p><strong>原因（按概率排序）：</strong></p>
+    <ol>
+      <li><strong>Docker Desktop 没开</strong> ← 头号原因。双击桌面图标，等右下角鲸鱼变绿</li>
+      <li>容器没起：项目根目录执行 <code>docker compose up -d</code></li>
+      <li>刚启动，表还没建出来</li>
+    </ol>
+    <div class="fix">
+      <p><strong>怎么修：</strong></p>
+      <pre style="margin-bottom:0"><code>docker ps                # 看到 doc-agent-pg 是 healthy 就行
+docker compose up -d     # 没起就执行这条</code></pre>
+    </div>
+  </div>
+</div>
+
+<div class="err">
+  <div class="err-head">
+    <span class="tag tag-db">数据库</span>
+    <h3>维度不匹配 dimension mismatch</h3>
+  </div>
+  <div class="err-body">
+    <p><strong>原因：</strong>换了 embedding 模型，但旧索引还在。<strong>向量空间变了</strong>，新旧向量根本不能放一起比。</p>
+    <div class="fix">
+      <p><strong>怎么修（必须重建索引）：</strong></p>
+      <p style="margin-bottom:0">用 pgvector 的话直接点页面上的「加载文档」；
+      内存版则要把 <code>data/vector-index.json</code> 和同名 <code>.stats</code>
+      <strong>改名备份</strong>（别删），重启后再点一次加载。</p>
+    </div>
+  </div>
+</div>
+
+<div class="err">
+  <div class="err-head">
+    <span class="tag tag-db">数据库</span>
+    <h3>Invalid UUID string: xxx.md#0</h3>
+  </div>
+  <div class="err-body">
+    <p><strong>原因：</strong>pgvector 主键默认是 <code>uuid</code> 类型，而本项目的片段 ID 是
+    <code>文件名#序号</code> 这种可读字符串（为了让重复加载时覆盖而不是重复插入），塞不进去。</p>
+    <div class="fix">
+      <p><strong>怎么修：</strong>建表时指定主键为文本，已在
+      <code>RagConfig.pgVectorStore()</code> 里加好 <code>.idType(PgIdType.TEXT)</code>。
+      改主键类型要<b>删表重建</b>：</p>
+      <pre style="margin-bottom:0"><code>docker exec -it doc-agent-pg psql -U docagent -d docagent \
+  -c "drop table vector_store cascade;"</code></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 代码类 ============ -->
+<h3 style="margin-top:30px">C · 代码类</h3>
+
+<div class="err">
+  <div class="err-head">
+    <span class="tag tag-code">代码</span>
+    <h3>ClassCastException: DefaultChatOptions cannot be cast to OpenAiChatOptions</h3>
+  </div>
+  <div class="err-body">
+    <pre><code>at org.springframework.ai.openai.OpenAiChatModel.createRequest(OpenAiChatModel.java:683)</code></pre>
+    <p><strong>原因：</strong>自己写了个包装器（装饰器）包住 <code>ChatModel</code>，
+    但<strong>漏了转发 <code>getDefaultOptions()</code></strong>。
+    <code>ChatClient</code> 拿它当底子合并参数，合并出通用类型，
+    而 <code>OpenAiChatModel</code> 内部直接强转成自己专属的类型 → 崩。</p>
+    <div class="fix">
+      <p><strong>怎么修：</strong>包装器里把 <code>getDefaultOptions()</code> 和
+      <code>getOptions()</code> 一起委托给被包装对象。</p>
+      <p class="muted" style="margin-bottom:0"><strong>通用教训：</strong>包装接口时，
+      <strong>凡是和「具体类型」有关的方法一个都不能漏</strong> —— 漏了不报编译错，
+      只在运行时炸。写完包装器一定要用真实链路跑一次，别只测「能启动」。</p>
+    </div>
+  </div>
+</div>
+
+<div class="err">
+  <div class="err-head">
+    <span class="tag tag-env">环境</span>
+    <h3>Port 8081 was already in use</h3>
+  </div>
+  <div class="err-body">
+    <p><strong>原因：</strong>IDEA 里跑着上一次的后端，新启的撞端口。
+    <strong>你看不到新功能，八成就是它</strong> —— 旧进程跑的还是改动前的代码。</p>
+    <div class="fix">
+      <p><strong>怎么修：</strong>在 IDEA 点 <span class="kbd">Stop</span> 停掉再
+      <span class="kbd">Run</span>。或者用另一个端口：</p>
+      <pre style="margin-bottom:0"><code>--server.port=8082</code></pre>
+    </div>
+  </div>
+</div>
+
+<div class="err">
+  <div class="err-head">
+    <span class="tag tag-env">环境</span>
+    <h3>Could not resolve placeholder 'XXX_API_KEY'</h3>
+  </div>
+  <div class="err-body">
+    <p><strong>原因：</strong>yaml 里写了 <code>${XXX_API_KEY}</code>，但环境变量没配。</p>
+    <div class="fix">
+      <p><strong>怎么修：</strong>IDEA 右上角运行配置 → <span class="kbd">Edit Configurations</span> →
+      <span class="kbd">Environment variables</span>，把 Key 填进去。
+      <b>注意</b>：CodeBuddy / 某些工具启动的进程会注入
+      <code>SERVER__PORT</code> 之类的环境变量，Spring Boot 宽松绑定会拿它当配置覆盖掉 yaml。</p>
+    </div>
+  </div>
+</div>
+
+<div class="err">
+  <div class="err-head">
+    <span class="tag tag-code">前端</span>
+    <h3>npm run build 报 MODULE_NOT_FOUND</h3>
+  </div>
+  <div class="err-body">
+    <p><strong>原因：</strong><code>npm install</code> 中途失败，导致 rollup / esbuild 的
+    <strong>平台专用原生模块</strong>没装上（Windows 上是 <code>@rollup/rollup-win32-x64-msvc</code>）。</p>
+    <div class="fix">
+      <p><strong>怎么修：</strong>精准补装，不要删整个 <code>node_modules</code>：</p>
+      <pre style="margin-bottom:0"><code>npm install @rollup/rollup-win32-x64-msvc
+npm install @esbuild/win32-x64</code></pre>
+    </div>
+  </div>
+</div>
+
+<h2>第三部分：不是错误的现象</h2>
+
+<div class="card note">
+  <h3>片段数突然翻倍（319 → 638）</h3>
+  <p><strong>不是 bug。</strong>旧版计数器用的是「累加」，重复点「加载文档」就翻倍。
+  数据其实没重复（向量库用稳定 ID 覆盖了），只是显示错。
+  现在改成<b>直接数真实条数</b>，已修复。</p>
+</div>
+
+<div class="card note">
+  <h3>回答里有 <code>#</code> 号、代码块很乱</h3>
+  <p><strong>不是 bug。</strong>模型返回的是 Markdown 源码，交给前端 <code>markdown-it</code> 渲染即可。
+  没渲染就是样式没加载或 <code>markdown.js</code> 没被调用。</p>
+</div>
+
+<div class="card note">
+  <h3>切换向量库后 <code>/api/status</code> 显示 0 个片段</h3>
+  <p><strong>不是 bug。</strong>两套向量库的数据各存各的，<b>不会自动迁移</b>。
+  切换后要重新点一次「加载文档」。</p>
+</div>
+
+<h2>第四部分：换对话服务商</h2>
+
+<p>智谱免费档<strong>只允许 1 并发</strong>，这是它最大的问题。换服务商只改三行，
+而且<strong>不需要重建索引</strong>（索引只和 embedding 模型绑定）。</p>
+
+<table>
+  <thead><tr><th style="width:18%">平台</th><th style="width:20%">免费模型</th><th style="width:30%">速率限制</th><th>base-url</th></tr></thead>
+  <tbody>
+    <tr><td>智谱</td><td>glm-4.7-flash</td><td>⚠️ 仅 1 并发</td><td><code>open.bigmodel.cn/api/paas/v4</code></td></tr>
+    <tr><td><strong>百度千帆</strong></td><td>ernie-speed-8k</td><td><strong>免费不限量 QPS=50</strong></td><td><code>qianfan.baidubce.com/v2</code></td></tr>
+    <tr><td>腾讯混元</td><td>hunyuan-lite</td><td>免费，256K 上下文</td><td><code>api.hunyuan.cloud.tencent.com/v1</code></td></tr>
+    <tr><td>火山豆包</td><td>doubao-lite-32k</td><td><strong>200 万 token/天</strong></td><td><code>ark.cn-beijing.volces.com/api/v3</code></td></tr>
+    <tr><td>讯飞星火</td><td>Spark Lite</td><td>token 不限，QPS=2</td><td>星火开放平台</td></tr>
+  </tbody>
+</table>
+
+<pre><code>base-url: https://qianfan.baidubce.com/v2
+api-key:  ${BAIDU_API_KEY}          ← 环境变量名也要一起改
+chat: { model: ernie-speed-8k }</code></pre>
+
+<p class="muted">各家免费政策变动频繁，上表以 2026-10 公开信息整理，
+<strong>以控制台实际显示为准</strong>。其他服务商的配置模板已写在
+<code>application.yaml</code> 的注释块里，照抄改三行即可。</p>
+
+<h2>第五部分：日常启动顺序</h2>
+
+<div class="card ok">
+  <ol style="margin:0">
+    <li>双击桌面 <strong>Docker Desktop</strong>，等右下角鲸鱼图标<strong>变绿不再动</strong></li>
+    <li>IDEA 里运行 <code>DocAgentApplication</code>（先 Stop 旧的再 Run）</li>
+    <li>前端 <code>npm run dev</code>，打开 <code>localhost:5173</code></li>
+    <li>看一眼左侧知识库状态是不是有片段数</li>
+  </ol>
+  <p class="muted" style="margin:10px 0 0">日常使用<b>不用</b>点「加载文档」——
+  319 个片段已经在数据库里了，只在换向量模型后才需要重建。</p>
+</div>
+
+<footer>
+  配套文档：<code>docs/01-pgvector-primary-key-pitfall.html</code>（UUID 主键那个坑的完整记录）·
+  <code>README.md</code> 向量库与排查章节<br>
+  全部内容基于 2026-10-04 的真实调试
+</footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,67 @@
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### 前端（Vue + Vite）###
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+### 本地生成的向量索引（体积大且可重建，不要提交）###
+data/
+
+### 日志与临时文件 ###
+*.log
+npm-debug.log*
+yarn-error.log*
+*.tmp
+
+### 环境变量文件（含 API Key，【绝对不能提交】）###
+.env
+.env.local
+.env.*.local
+*.env
+
+### Python 缓存 ###
+__pycache__/
+*.py[cod]
+
+### 系统文件 ###
+.DS_Store
+Thumbs.db
+desktop.ini
+
+### 注意：data/ 已在上面忽略
+### data/ 里有会话历史和向量索引（个人数据 + 可重建，体积 11MB）
+### 但 tools/spring-docs/（Spring 官方文档 1.3MB）会提交，
+### 这样面试官克隆后不爬虫也能直接建索引，复现成本最低。

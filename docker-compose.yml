@@ -1,0 +1,53 @@
+# PostgreSQL + pgvector —— 让向量存进真正的数据库
+#
+# 怎么用（在项目根目录打开终端执行）：
+#   启动：docker compose up -d       （第一次会拉镜像，约 1-2 分钟）
+#   看状态：docker compose ps
+#   停止：docker compose stop
+#   删除并清空数据：docker compose down -v
+#
+# 数据库起好后，把 src/main/resources/application.yaml 里的
+#   doc-agent.vector-store.type 改成 pgvector
+# 重启应用，再点一次页面上的「加载文档」把文档灌进数据库。
+# （两套向量库的数据是各存各的，不会自动迁移，所以切换后必须重建索引）
+
+# 数据存在哪？（很多人关心会不会撑爆 C 盘，结论：不会，这点数据根本不占地方）
+#
+#   - PostgreSQL 的数据挂载在下面的命名卷 pgdata 里，它对 Windows 而言是
+#     Docker 虚拟磁盘内部的一个目录，你看不见具体文件，但容器删了数据还在。
+#   - 虚拟磁盘文件默认落在 C:\Users\<你>\AppData\Local\Docker\wsl\disk\docker_data.vhdx
+#     它才是唯一会占空间的东西，但它本身有基础体积（无论用不用都要几 GB），
+#     你这套向量数据只有几 MB，加上 PostgreSQL 系统表总共不到 100MB。
+#
+#   想让虚拟磁盘放到 D 盘，在【第一次启动 Docker Desktop 之前】改最省事：
+#     Docker Desktop 界面 → 右上角齿轮 Settings → Resources → Advanced
+#     → Disk image location 改成 D:\Docker\wsl\data → Apply & Restart
+#     （如果已经生成了，改这里 Docker 也会自动帮你迁移，稍慢一点而已）
+#
+#   不建议改成 ./data/pgdata 这类绑定挂载：PostgreSQL 启动时要改目录权限，
+#   而 Windows 的 NTFS 通过 Docker 映射过去后不支持 chown，很容易起不来。
+
+services:
+  postgres:
+    # pgvector 官方镜像，已经把 vector 扩展编好，不用自己编译
+    image: pgvector/pgvector:pg16
+    container_name: doc-agent-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: docagent
+      POSTGRES_USER: docagent
+      POSTGRES_PASSWORD: docagent123
+    ports:
+      # 本机 5432 → 容器 5432，和 application.yaml 里的 jdbc url 对应
+      - "5432:5432"
+    volumes:
+      # 数据挂在命名卷里，容器删了数据还在
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docagent -d docagent"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  pgdata:

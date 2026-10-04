@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.1.1</version>
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+    <groupId>com.example</groupId>
+    <artifactId>doc-agent</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>doc-agent</name>
+    <description>doc-agent</description>
+    <url/>
+    <licenses>
+        <license/>
+    </licenses>
+    <developers>
+        <developer/>
+    </developers>
+    <scm>
+        <connection/>
+        <developerConnection/>
+        <tag/>
+        <url/>
+    </scm>
+    <properties>
+        <java.version>17</java.version>
+        <spring-ai.version>2.0.0</spring-ai.version>
+    </properties>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.ai</groupId>
+                <artifactId>spring-ai-bom</artifactId>
+                <version>${spring-ai.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-model-openai</artifactId>
+        </dependency>
+
+        <!--
+            Spring AI 2.0 是"模块化"的：OpenAI starter 只带"对话/向量化模型"的自动配置，
+            向量库（SimpleVectorStore / VectorStore / SearchRequest）这一块不再随 starter 附带，
+            必须自己把对应模块引进来。1.x 时代这些是打包在一起的，所以网上老教程看不到这一步。
+
+            下面两个坐标其实会被 starter 间接带进来一部分，但显式声明能避免"编译期找不到包"，
+            也是官方文档推荐的做法（明确表达代码依赖了什么）。
+        -->
+        <!-- 向量库核心接口与内存实现：VectorStore、SimpleVectorStore、SearchRequest -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-vector-store</artifactId>
+        </dependency>
+        <!-- 通用基础设施：Document、TokenTextSplitter（2.0 里从 vectorstore 包迁到了 transformer.splitter 包） -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-commons</artifactId>
+        </dependency>
+
+        <!--
+            pgvector：把向量存进 PostgreSQL，替代内存版 SimpleVectorStore。
+
+            为什么还没删掉上面的内存版？因为两套是"可切换"的：
+            application.yaml 里 doc-agent.vector-store.type 写 simple 就用内存+JSON 落盘，
+            写 pgvector 就用数据库。这样数据库没起起来时项目照样能跑，方便随时对比。
+
+            PgVectorStore 底层走 JDBC，所以需要 jdbc starter + PostgreSQL 驱动。
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-pgvector-store</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

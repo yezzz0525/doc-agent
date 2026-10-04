@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>踩坑记录 · Invalid UUID string（pgvector 主键类型）</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1f2328; --muted:#656d76; --line:#d8dee4;
+    --blue:#0969da; --blue-bg:#ddf4ff; --red:#cf222e; --red-bg:#ffebe9;
+    --green:#1a7f37; --green-bg:#dafbe1; --amber:#9a6700; --amber-bg:#fff8c5;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:40px 24px 80px;
+    background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+    font-size:15px; line-height:1.75;
+  }
+  .wrap{max-width:860px;margin:0 auto}
+  header{margin-bottom:32px}
+  h1{font-size:28px;font-weight:600;margin:0 0 10px;letter-spacing:-.3px}
+  .meta{color:var(--muted);font-size:13px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+  .pill{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:2px 11px;font-size:12px}
+  h2{font-size:19px;font-weight:600;margin:38px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:15px;font-weight:600;margin:22px 0 8px}
+  p{margin:10px 0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:16px 0}
+  .lead{background:var(--red-bg);border:1px solid #ff818266;border-left:4px solid var(--red)}
+  .answer{background:var(--green-bg);border:1px solid #4ac26b66;border-left:4px solid var(--green)}
+  .note{background:var(--amber-bg);border:1px solid #d4a72c66;border-left:4px solid var(--amber)}
+  .tip{background:var(--blue-bg);border:1px solid #54aeff66;border-left:4px solid var(--blue)}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;
+      font-family:ui-monospace,"Cascadia Code",Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.6;margin:12px 0}
+  code{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:12.5px;
+       background:var(--code-bg);padding:1.5px 5px;border-radius:4px;border:1px solid var(--line)}
+  pre code{background:none;border:none;padding:0;font-size:inherit}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:var(--code-bg);font-weight:600;font-size:13px}
+  tbody tr:nth-child(even){background:#fafbfc}
+  .ok{color:var(--green);font-weight:600}
+  .no{color:var(--red);font-weight:600}
+  .muted{color:var(--muted);font-size:13.5px}
+  ol,ul{padding-left:24px;margin:10px 0}
+  li{margin:6px 0}
+  .steps{counter-reset:s;list-style:none;padding:0}
+  .steps li{counter-increment:s;position:relative;padding-left:38px;margin:12px 0}
+  .steps li::before{content:counter(s);position:absolute;left:0;top:1px;width:24px;height:24px;border-radius:50%;
+    background:var(--blue);color:#fff;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center}
+  .kbd{font-family:inherit;font-size:12px;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;
+       padding:1px 6px;background:var(--card)}
+  footer{margin-top:52px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Invalid UUID string —— pgvector 主键类型踩坑记录</h1>
+  <div class="meta">
+    <span class="pill">doc-agent</span>
+    <span class="pill">pgvector / PostgreSQL</span>
+    <span class="pill">2026-10-04</span>
+    <span class="pill">状态：已修复并验证</span>
+  </div>
+</header>
+
+<h2>一、错误原文</h2>
+<pre><code>2026-10-04T17:29:03.028 INFO  [nio-8081-exec-5] o.s.a.transformer.splitter.TextSplitter : Splitting up document into 2 chunks.
+2026-10-04T17:29:03.203 ERROR [nio-8081-exec-5] o.a.c.c.C.[.[.[dispatcherServlet] : Servlet.service() for servlet
+[dispatcherServlet] in context with path [] threw exception
+[Request processing failed: java.lang.IllegalArgumentException: Invalid UUID string: 001-security-saml2.md#0</code></pre>
+<p class="muted">触发时机：页面点「加载文档」，正在把切好的片段写进数据库。</p>
+
+<h2>二、一句话结论</h2>
+<div class="card answer">
+  <p><strong>我给每个文档片段起了个"人话名字"当主键（<code>001-security-saml2.md#0</code>），
+  但 pgvector 的主键列只认 UUID 格式（<code>8f3a...-...-...</code>）。名字塞不进去，所以报 invalid。</strong></p>
+  <p style="margin-bottom:0">修法：把主键列类型从 <code>uuid</code> 改成 <code>text</code>，一行配置。</p>
+</div>
+
+<h2>三、为什么会这样</h2>
+
+<p>要理解这个错误，得先认识三个"角色"。它们的 ID 规则各不相同：</p>
+
+<table>
+  <thead><tr><th style="width:26%">角色</th><th style="width:30%">它对 ID 的要求</th><th>说白了</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>我的代码</strong><br><code>DocumentService</code></td>
+      <td>任意字符串都行</td>
+      <td>我给片段起名 <code>文件名#序号</code>，好认、好查、重复加载能覆盖</td>
+    </tr>
+    <tr>
+      <td><strong>pgvector 组件</strong><br><code>PgVectorStore</code></td>
+      <td>默认只接受 <strong>UUID</strong><br>（源码 <code>convertIdToPgType()</code>）</td>
+      <td>它拿到字符串先当 UUID 解析，解析不了就抛异常</td>
+    </tr>
+    <tr>
+      <td><strong>PostgreSQL</strong><br>表 <code>vector_store</code></td>
+      <td>主键列类型是 <code>uuid</code></td>
+      <td>数据库只认 32 位十六进制的标准 UUID 格式</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="card tip">
+  <p style="margin-top:0"><strong>打个比方：</strong>片段 ID 就像贴在档案袋上的标签。</p>
+  <ul style="margin-bottom:0">
+    <li><strong>内存版 SimpleVectorStore</strong> = 一堆便利贴贴墙上，你想写"001-安全.md#0"随便写，没人会拦。</li>
+    <li><strong>pgvector</strong> = 银行金库，每个格子有固定格式的电子标签机，只认 <code>UUID</code>。你递一张手写标签过去，机器"滴"一声报警 —— 就是你看到的 <code>Invalid UUID string</code>。</li>
+  </ul>
+</div>
+
+<h3>为什么我当初要起这种 ID</h3>
+<p>这不是随便起的。之前有个 bug：<strong>重复点「加载文档」，界面显示的片段数从 319 变成 638</strong>，看着像白白烧了双倍 embedding 额度。</p>
+<p>排查后发现数据其实没重复（向量库用主键覆盖了），但计数器在做累加所以翻倍了。修完之后我顺手把主键也换成了"文件名#序号"这种稳定 ID —— 这样重复加载时，数据库看到同一个名字就走 <code>ON CONFLICT DO UPDATE</code> 覆盖，<strong>不会插出两条一模一样的向量</strong>。</p>
+
+<div class="card note">
+  <p style="margin-top:0"><strong>这个设计在内存版和 pgvector 版都是对的</strong>，问题只在于
+  pgvector 的主键列默认是 UUID，跟我的可读 ID 冲突了。内存版一直没暴露，因为它的键本来就是字符串。</p>
+</div>
+
+<h2>四、为什么我之前没测出来</h2>
+<div class="card lead">
+  <p style="margin-top:0"><strong>我的疏忽：我做 pgvector 改造时只测了"启动"和"自动建表"，没测真实写入。</strong></p>
+  <p>当时看到日志打印「表已建好、HNSW 索引已建好」就认为完成了。但 <code>initializeSchema</code>
+  建出来的是 <code>id uuid</code> 这类结构，<strong>只有真正 INSERT 一条带字符串 ID 的数据，才会暴露这个冲突</strong>。</p>
+  <p style="margin-bottom:0">教训：<strong>新增一个持久化后端，"能启动"和"能读写"是两件事，必须都测。</strong>
+  好在你点了「加载文档」，这个动作本身把问题逼出来了。</p>
+</div>
+
+<h2>五、两种修法，我为什么选第二个</h2>
+
+<table>
+  <thead><tr><th style="width:20%">方案</th><th style="width:40%">做法</th><th>结果</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>① 改成 UUID</strong></td>
+      <td>把文件名哈希成 UUID：<code>UUID.nameUUIDFromBytes("001-...md#0".getBytes())</code></td>
+      <td class="no">能写进去，但表里全变成 <code>3f2a9b1c-7e4d-...</code>
+      ，<strong>看不出这条向量属于哪个文件</strong>，调试和演示都很吃亏</td>
+    </tr>
+    <tr>
+      <td><strong>② 主键改 TEXT</strong><br><span class="pill">已采用</span></td>
+      <td>建表时指定主键类型是文本，直接原样存 <code>001-security-saml2.md#0</code></td>
+      <td class="ok">稳定 ID 原样保留，可读、可查、可核对，还顺手解决了 ① 的问题</td>
+    </tr>
+  </tbody>
+</table>
+
+<p><strong>改动的代价：</strong>主键字符串比 UUID 长一点，占用空间略多。但——
+<span class="ok">对检索速度毫无影响</span>，因为 HNSW 索引建在 <code>embedding</code>（向量）列上，跟主键类型没关系。</p>
+
+<pre><code><span style="color:#6a737d">// RagConfig.pgVectorStore() 里加的一行</span>
+PgVectorStore.builder(jdbcTemplate, embeddingModel)
+        .vectorTableName(vectorTable)
+        .dimensions(dimensions)
+        .idType(PgVectorStore.PgIdType.TEXT)   <span style="color:#6a737d">// ← 新增：主键用文本</span>
+        .distanceType(PgVectorStore.PgDistanceType.COSINE_DISTANCE)
+        .indexType(PgVectorStore.PgIndexType.HNSW)
+        .initializeSchema(true)
+        .build();</code></pre>
+
+<div class="card note">
+  <p style="margin-top:0"><strong>连带要知道的一件事：改主键类型必须删表重建。</strong>
+  代码只会"建表"，不会"改表结构"（没有 ALTER）。当时表里正好 0 行，删了没成本。
+  如果表里已经有数据了，就要先导出来、drop 掉、重建、再导回去。</p>
+</div>
+
+<h2>六、修复后的验证证据</h2>
+
+<h3>1. 删旧表 → 重打包 → 启动（自动建新表）</h3>
+<pre><code>docker exec -it doc-agent-pg psql -U docagent -d docagent \
+  -c "drop table vector_store cascade;"</code></pre>
+
+<h3>2. 新表结构：id 变成 text，HNSW 索引还在</h3>
+<pre><code>                 Table "public.vector_store"
+  Column   |     Type     | Nullable | Default
+-----------+---------------+----------+---------
+ id        | text          | not null |          ← 改成了 text
+ content   | text          |          |
+ metadata  | json          |          |
+ embedding | vector(1024)  |          |
+Indexes:
+    "vector_store_pkey" PRIMARY KEY, btree (id)
+    "spring_ai_vector_index" hnsw (embedding vector_cosine_ops)   ← 索引没受影响</code></pre>
+
+<h3>3. 实测插入原来会报错的这种 ID</h3>
+<pre><code>insert into vector_store (id, content, metadata)
+values ('001-security-saml2.md#0', '测试内容', '{"source":"001-security-saml2.md"}');
+
+INSERT 0 1                                     ← 成功
+
+           id            | content
+-------------------------+----------
+ 001-security-saml2.md#0 | 测试内容</code></pre>
+
+<h3>4. 顺带查证：重复加载不会撞主键</h3>
+<p><code>PgVectorStore</code> 的写入 SQL 是这样的（源码实测）：</p>
+<pre><code>INSERT INTO vector_store (id, content, metadata, embedding) VALUES (?, ?, ?::jsonb, ?)
+ON CONFLICT (id) DO UPDATE SET content = ?, metadata = ?::jsonb, embedding = ?</code></pre>
+<p><span class="ok">确实是"覆盖"而不是"插入"</span>，所以稳定 ID 的设计在 pgvector 下依然成立，
+重复点「加载文档」不会产生重复数据。</p>
+
+<h2>七、你要怎么操作</h2>
+<ol class="steps">
+  <li>在 IDEA 里点 <span class="kbd">Stop</span> 停掉正在跑的后端（它还是旧代码，必须停）</li>
+  <li>点 <span class="kbd">Run</span> 重新启动（会重新加载新编译的代码）</li>
+  <li>刷新页面，点「加载文档」</li>
+  <li>看到 <code>PostgreSQL · pgvector · 表 vector_store · 319 个片段</code> 就成了</li>
+</ol>
+
+<h2>八、举一反三：以后遇到"能启动但一用就炸"怎么查</h2>
+<ol>
+  <li><strong>先看异常类名和参数</strong>。这次的 <code>IllegalArgumentException: Invalid UUID string: xxx</code>
+      已经把"什么东西"和"哪个值"都告诉你了 —— <code>xxx</code> 就是出问题的那个 ID，比读一百行日志有用。</li>
+  <li><strong>顺着参数找到源头</strong>。<code>xxx</code> 是我们代码生成的片段 ID，去
+      <code>DocumentService.loadDocs()</code> 搜 <code>.id(</code> 就找到了。</li>
+  <li><strong>去看对方的要求</strong>。报错说"要 UUID"，就去看 pgvector 的默认配置
+      （<code>DEFAULT_ID_TYPE = PgIdType.UUID</code>），确认能不能改。</li>
+  <li><strong>改完一定要测真实读写</strong>。建表成功 ≠ 能写数据。启动日志好看 ≠ 能用。</li>
+</ol>
+
+<h2>九、命令速查</h2>
+<pre><code><span style="color:#6a737d"># 看表结构（确认 id 是不是 text）</span>
+docker exec -it doc-agent-pg psql -U docagent -d docagent -c "\d vector_store"
+
+<span style="color:#6a737d"># 看灌了多少片段</span>
+docker exec -it doc-agent-pg psql -U docagent -d docagent -c "select count(*) from vector_store;"
+
+<span style="color:#6a737d"># 看看都存了哪些文件（主键可读的好处就在这）</span>
+docker exec -it doc-agent-pg psql -U docagent -d docagent -c "select id from vector_store limit 10;"
+
+<span style="color:#6a737d"># 删表重建（改表结构时用，慎用）</span>
+docker exec -it doc-agent-pg psql -U docagent -d docagent -c "drop table vector_store cascade;"</code></pre>
+
+<div class="card tip">
+  <p style="margin-top:0"><strong>把主键设成可读的"文件名#序号"，还有一个额外好处：</strong>
+  以后想查"这条答案到底来自哪个文件的第几段"，直接
+  <code>select id from vector_store where ...</code> 就看到了，不用去翻代码猜 ID 规则。
+  这种"可读性"在面试里也能讲 —— 它说明设计时考虑了运维和排查，不只是跑通。</p>
+</div>
+
+<footer>
+  相关代码：<code>config/RagConfig.java</code>（配置与原理注释）·
+  <code>service/DocumentService.java</code>（稳定 ID 的生成）·
+  <code>README.md</code> 向量库章节（排查小抄）<br>
+  文档生成时间：2026-10-04
+</footer>
+
+</div>
+</body>
+</html>

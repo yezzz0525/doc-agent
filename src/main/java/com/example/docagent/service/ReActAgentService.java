@@ -10,9 +10,9 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.DefaultToolCallingManager;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.model.tool.ToolCallingManager;
 import org.springframework.ai.model.tool.ToolExecutionResult;
+import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.stereotype.Service;
 
@@ -136,12 +136,31 @@ public class ReActAgentService {
 
         for (int i = 1; i <= maxIterations; i++) {
             // ===== 第 1 步：思考（调模型，让它决定要不要调工具）=====
+            // ⚠️ 第二个坑：Prompt 构造函数是 `this.messages = messages;`——零拷贝，
+            //   它直接持有我们这个 ArrayList。后面我们往 messages 里 add(assistant)，
+            //   这个 prompt 看到的 instructions 也会跟着变。所以这里必须传**快照**。
+            //   不传快照的话，executeToolCalls 返回的 conversationHistory 会是
+            //   [System, User, Assistant, Assistant, ToolResponse]（assistant 出现两次）。
+            List<Message> snapshot = new ArrayList<>(messages);
             Prompt prompt = Prompt.builder()
-                    .messages(messages)
-                    .chatOptions(ToolCallingChatOptions.builder()
-                            // ToolCallbacks.from(...) 把带 @Tool 注解的对象转成框架能识别的回调
+                    .messages(snapshot)
+                    // ⚠️ 这里必须用 OpenAiChatOptions，不能用 ToolCallingChatOptions.builder()
+                    //
+                    // 踩过的坑：一开始写的是 ToolCallingChatOptions.builder()，编译通过、
+                    // 单元测试也过，但一跑就抛
+                    //   ClassCastException: DefaultToolCallingChatOptions cannot be cast to OpenAiChatOptions
+                    //
+                    // 原因：ToolCallingChatOptions.builder() 造出来的是基类
+                    // DefaultToolCallingChatOptions，而 OpenAiChatModel.createRequest() 里做的是
+                    //   (OpenAiChatOptions) prompt.getOptions()
+                    // 直接强转，基类实例当然转不过去。
+                    //
+                    // 关键点：OpenAiChatOptions.Builder **继承自**
+                    // DefaultToolCallingChatOptions.Builder（不是反过来），所以它本来就支持
+                    // .toolCallbacks() / .toolContext()，还额外支持 .extraBody() 给百炼传
+                    // enable_search。**用子类那个，两边需求一次满足。**
+                    .chatOptions(OpenAiChatOptions.builder()
                             .toolCallbacks(ToolCallbacks.from(tools))
-                            // toolContext 让工具方法能拿到 conversationId
                             .toolContext(toolContext == null ? Map.of() : toolContext)
                             .build())
                     .build();
@@ -175,7 +194,35 @@ public class ReActAgentService {
 
                 // 工具返回值追加进消息列表 —— 这就是"观察"环节。
                 // 模型下一轮就能看到自己刚查到的东西。
-                messages.addAll(result.conversationHistory());
+                //
+                // ⚠️⚠️ 这里踩了两个坑，才最终写出下面这 5 行：
+                //
+                // 坑一：conversationHistory() 不是「只有工具响应」，
+                //   而是「传入 prompt 的全部消息 + assistant + 工具响应」。
+                //   直接 addAll 会让 SystemMessage/UserMessage/上几轮的 AssistantMessage
+                //   全部重复追加，消息列表指数级膨胀，token 成本暴涨。
+                //
+                // 坑二：也不能用 history.subList(messages.size(), history.size()) 这种
+                //   偏移量算术。因为 Prompt 是零拷贝持有 messages 的（构造函数
+                //   `this.messages = messages;`），我们在调 executeToolCalls 之前
+                //   已经 messages.add(assistant) 了，于是 prompt.getInstructions()
+                //   里也有 assistant → history 里 assistant 出现两次 →
+                //   subList 算出来是 [Assistant, ToolResponse] → assistant 又被加一遍。
+                //   这个 bug 表现得很隐蔽：代码看起来完全合理，只有断言消息条数才抓得到。
+                //
+                // 正确做法：只取类型为 ToolResponseMessage 的消息。
+                // 这是本项目第二次栽在「Spring AI 的 List 是共享引用而不是副本」上，
+                // 上一次是 MessageWindowChatMemory。所以这里的经验是：
+                //     凡是把 messages 列表交给框架对象，都要假设它可能被持有或修改，
+                //     要么传 List.copyOf()，要么事后按类型过滤，不要靠下标算。
+                List<Message> history = result.conversationHistory();
+                if (history != null) {
+                    for (Message m : history) {
+                        if (m instanceof ToolResponseMessage) {
+                            messages.add(m);
+                        }
+                    }
+                }
 
                 // 工具成功返回（哪怕内容是"没查到"），失败计数清零
                 consecutiveFailures = 0;

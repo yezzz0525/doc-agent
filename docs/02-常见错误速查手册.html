@@ -126,12 +126,14 @@
   <div class="err-body">
     <pre><code>com.openai.errors.RateLimitException: 429: 您的账户已达速率限制，请控制请求频率
 java.lang.IllegalArgumentException: Invalid UUID string: ...  ← 这种情况说明是封装层的错</code></pre>
-    <p><strong>原因：</strong>免费模型都有速率上限。两种情况：</p>
+    <p><strong>原因：</strong>模型服务都有速率上限。三种情况：</p>
     <ul>
-      <li><strong>智谱</strong>：免费档<strong>只允许 1 个并发请求</strong>。上一条流式回答没结束就发新的 → 必撞</li>
-      <li><strong>硅基流动</strong>：按 QPS/TPM 限速，点「加载文档」时最密集（80 次请求）</li>
+      <li><strong>并发型</strong>：同一时刻只允许 N 个请求。<b>流式回答没结束就发新的 → 必撞</b>（代码里的 <code>GuardedChatModel</code> 就是为此存在的）</li>
+      <li><strong>频率型</strong>：按 QPS/TPM 限速。点「加载文档」时最密集（80 次请求）</li>
+      <li><strong>超时型</strong>：等太久直接抛 <code>Request failed</code>，而不是干脆的 429</li>
     </ul>
-    <p class="muted"><strong>怎么判断是哪一个：</strong>看 <code>meta</code> 事件有没有到。有引用来源 = 检索过了 = 挂在对话模型。</p>
+    <p class="muted"><strong>怎么判断挂在哪一段：</strong>看 <code>meta</code> 事件有没有到。
+    有引用来源 = 检索已过 = 挂在<b>对话模型</b>；没收到 = 挂在<b>意图判定或检索</b>。</p>
     <div class="fix">
       <p><strong>怎么修：</strong></p>
       <ol style="margin-bottom:0">
@@ -149,14 +151,19 @@ java.lang.IllegalArgumentException: Invalid UUID string: ...  ← 这种情况�
     <h3>401：令牌已过期 / Token is invalid</h3>
   </div>
   <div class="err-body">
-    <pre><code>401: 令牌已过期或验证不正确                                        ← 智谱
-{"code":30014,"message":"Token is invalid."}                       ← 硅基流动
+    <pre><code>{"code":30014,"message":"Token is invalid."}                       ← 硅基流动
+InvalidApiKey / {"code":"InvalidApiKey",...}                     ← 百炼
 com.openai.errors.UnauthorizedException: 401 ...</code></pre>
     <p><strong>原因：</strong>Key 没配、拼错了、过期了，或者用了别的服务商的 Key。</p>
-    <p class="muted">两家错误格式完全不同，<strong>看格式就知道是哪一家挂的</strong>：中文句子 = 智谱，JSON = 硅基流动。</p>
+    <p class="muted">两家错误格式完全不同，<strong>看格式就知道是哪一家挂的</strong>：
+    <code>{"code":30014,...,"message":"Token is invalid."}</code> 是<b>硅基流动</b>；
+    <code>InvalidApiKey</code> / <code>Arrearage</code> 是<b>百炼</b>。</p>
     <div class="fix">
-      <p><strong>怎么修：</strong>检查 IDEA 运行配置的 <span class="kbd">Environment variables</span>：</p>
-      <pre style="margin-bottom:0"><code>ZHIPU_API_KEY=你的智谱Key;SILICONFLOW_API_KEY=你的硅基流动Key</code></pre>
+      <p><strong>怎么修：</strong>本项目需要<b>两个</b>环境变量，缺一个就有一类问题问不了：</p>
+      <pre style="margin-bottom:0"><code>DASHSCOPE_API_KEY=百炼Key;SILICONFLOW_API_KEY=硅基流动Key</code></pre>
+      <p class="muted" style="margin-top:8px">
+      只有百炼 → 闲聊能答、技术问题 401（检索挂了）；只有硅基流动 → 所有问题都失败。<br>
+      快速自查：<code>python tools\check_config.py</code>，它会直接告诉你是哪个环节。</p>
     </div>
   </div>
 </div>
@@ -169,11 +176,13 @@ com.openai.errors.UnauthorizedException: 401 ...</code></pre>
   <div class="err-body">
     <p><strong>原因：</strong>各家模型代码写法差异很大，而且<b>免费版和收费版是两个条目</b>。</p>
     <table>
-      <thead><tr><th style="width:30%">服务商</th><th>正确写法</th></tr></thead>
+      <thead><tr><th style="width:32%">服务商 / 用途</th><th>正确写法</th></tr></thead>
       <tbody>
-        <tr><td>智谱</td><td><code>glm-4.7-flash</code>（全小写）</td></tr>
+        <tr><td>百炼 · 对话（当前在用）</td><td><code>qwen-flash</code>；报不存在就换 <code>qwen3.8-flash</code></td></tr>
+        <tr><td><b>百炼 · 地址</b></td><td><code>dashscope.<b>aliyuncs</b>.com</code>（少一个 c 会返回 404 HTML 页面）</td></tr>
         <tr><td>硅基流动 · 国内站</td><td><code>https://api.siliconflow.cn/v1</code></td></tr>
         <tr><td>硅基流动 · 免费向量模型</td><td><code>BAAI/bge-m3</code>（写成 <code>Pro/BAAI/bge-m3</code> 就是<b>收费版</b>）</td></tr>
+        <tr><td>智谱（若换过去）</td><td><code>glm-4.7-flash</code>（全小写）</td></tr>
       </tbody>
     </table>
     <div class="fix">
@@ -338,27 +347,30 @@ npm install @esbuild/win32-x64</code></pre>
 
 <h2>第四部分：换对话服务商</h2>
 
-<p>智谱免费档<strong>只允许 1 并发</strong>，这是它最大的问题。换服务商只改三行，
-而且<strong>不需要重建索引</strong>（索引只和 embedding 模型绑定）。</p>
+<p><strong>本项目当前配置：对话走百炼 qwen-flash，向量留在硅基流动 bge-m3。</strong>
+换对话服务商只改三行，而且<strong>不需要重建索引</strong>（索引只和 embedding 模型绑定）。</p>
 
 <table>
-  <thead><tr><th style="width:18%">平台</th><th style="width:20%">免费模型</th><th style="width:30%">速率限制</th><th>base-url</th></tr></thead>
+  <thead><tr><th style="width:18%">平台</th><th style="width:22%">模型</th><th style="width:26%">速率限制</th><th>base-url</th></tr></thead>
   <tbody>
-    <tr><td>智谱</td><td>glm-4.7-flash</td><td>⚠️ 仅 1 并发</td><td><code>open.bigmodel.cn/api/paas/v4</code></td></tr>
+    <tr><td><strong>阿里百炼</strong>（当前）</td><td>qwen-flash</td><td>按量计费，很便宜</td><td><code>dashscope.aliyuncs.com/compatible-mode/v1</code></td></tr>
+    <tr><td>硅基流动</td><td>Qwen/Qwen3-8B</td><td>免费，30 RPM</td><td><code>api.siliconflow.cn/v1</code></td></tr>
     <tr><td><strong>百度千帆</strong></td><td>ernie-speed-8k</td><td><strong>免费不限量 QPS=50</strong></td><td><code>qianfan.baidubce.com/v2</code></td></tr>
     <tr><td>腾讯混元</td><td>hunyuan-lite</td><td>免费，256K 上下文</td><td><code>api.hunyuan.cloud.tencent.com/v1</code></td></tr>
-    <tr><td>火山豆包</td><td>doubao-lite-32k</td><td><strong>200 万 token/天</strong></td><td><code>ark.cn-beijing.volces.com/api/v3</code></td></tr>
+    <tr><td>智谱</td><td>glm-4.7-flash</td><td>⚠️ <strong>仅 1 并发</strong></td><td><code>open.bigmodel.cn/api/paas/v4</code></td></tr>
+    <tr><td>火山豆包</td><td>doubao-lite-32k</td><td>200 万 token/天</td><td><code>ark.cn-beijing.volces.com/api/v3</code></td></tr>
     <tr><td>讯飞星火</td><td>Spark Lite</td><td>token 不限，QPS=2</td><td>星火开放平台</td></tr>
   </tbody>
 </table>
 
-<pre><code>base-url: https://qianfan.baidubce.com/v2
-api-key:  ${BAIDU_API_KEY}          ← 环境变量名也要一起改
-chat: { model: ernie-speed-8k }</code></pre>
+<pre><code>base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+api-key:  ${DASHSCOPE_API_KEY}       ← 当前配置
+chat: { model: qwen-flash }</code></pre>
 
 <p class="muted">各家免费政策变动频繁，上表以 2026-10 公开信息整理，
 <strong>以控制台实际显示为准</strong>。其他服务商的配置模板已写在
-<code>application.yaml</code> 的注释块里，照抄改三行即可。</p>
+<code>application.yaml</code> 的注释块里，照抄改三行即可。<br>
+<b>换对话服务商会自动失效</b>：联网搜索的 <code>enable_search</code> 是百炼特有参数。</p>
 
 <h2>第五部分：日常启动顺序</h2>
 

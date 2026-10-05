@@ -24,7 +24,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 /**
  * 问答服务：先判断问题类型，再决定"查文档回答"还是"直接聊"
@@ -43,9 +42,6 @@ public class RagChatService {
     private static final Logger log = LoggerFactory.getLogger(RagChatService.class);
 
     private static final DateTimeFormatter TS = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
-
-    /** 每次检索召回几个片段。调大：材料更全但噪音更多、更费 token；调小：更精准但可能漏 */
-    private static final int TOP_K = 4;
 
     /**
      * 普通对话模式的提示词
@@ -388,74 +384,6 @@ public class RagChatService {
         }
     }
 
-    /**
-     * RAG 的准备工作：检索 → 整理引用来源 → 拼好提示词
-     *
-     * 抽出来的原因：一次性回答（ask）和流式回答（streamAsk）都要用这段，
-     * 写两份迟早会改漏一份。返回 null 表示知识库里没有可用内容。
-     */
-    private RagPlan prepareRag(String cid, String question) {
-        // ===== 耗时打点：回答慢的时候，日志里能直接看出慢在哪一环 =====
-        // 一次 RAG 问答要串行走三段外部调用：意图分类 → 向量检索 → 生成。
-        // 界面上只是"转圈"，但没有日志就完全不知道瓶颈在哪，这里把每段耗时都记下来。
-        long t0 = System.nanoTime();
-
-        // 把查询词转成向量，去向量库里找语义最相近的几个片段
-        String searchQuery = buildSearchQuery(cid, question);
-        List<Document> hits = vectorStore.similaritySearch(
-                SearchRequest.builder()
-                        .query(searchQuery)
-                        .topK(TOP_K)
-                        .build());
-        long searchMs = (System.nanoTime() - t0) / 1_000_000;
-
-        if (hits == null || hits.isEmpty()) {
-            return null;
-        }
-
-        List<SourceRef> sources = new ArrayList<>(hits.size());
-        for (Document doc : hits) {
-            String file = String.valueOf(doc.getMetadata().getOrDefault("source", "未知来源"));
-            Object title = doc.getMetadata().get("title");
-            sources.add(SourceRef.of(file, title == null ? null : String.valueOf(title),
-                    doc.getScore(), doc.getText()));
-        }
-
-        String context = hits.stream()
-                .map(doc -> "【来源: " + doc.getMetadata().getOrDefault("title",
-                        doc.getMetadata().getOrDefault("source", "未知")) + "】\n" + doc.getText())
-                .collect(Collectors.joining("\n\n——————\n\n"));
-
-        // 关键约束：只许根据资料回答，不许编造——这是压制幻觉的核心手段。
-        // 另外明确要求用 Markdown 排版，因为前端会按 Markdown 渲染，排版好不好直接决定观感。
-        String systemPrompt = """
-                你是一个 Spring 技术文档助手。请严格根据下面的参考资料回答用户问题。
-                如果资料中没有相关内容，请直接回答"文档资料中没有找到相关内容"，不要凭空编造。
-                用户可能会追问上一轮的内容，请结合对话历史理解他在问什么。
-
-                回答要求：
-                1. 用中文回答，语气专业但平易近人。
-                2. 使用 Markdown 排版：小节用 ### 标题，关键配置项用 `代码` 包裹，
-                   配置示例或代码用 ``` 代码块，并列的要点用 - 列表。
-                3. 不要罗列文件名，也不要写"根据参考资料"，系统会自动展示引用来源。
-                4. 回答长度适中，直接回答问题本身，不要展开无关内容。
-
-                参考资料：
-                %s
-                """.formatted(context);
-
-        // 命中 4 段资料时，拼出来的提示词大约 3000+ token。模型读得越慢、出字越慢，
-        // 这是"转圈很久"的第二个常见原因（第一个是意图分类那多出来的一次调用）。
-        long totalMs = (System.nanoTime() - t0) / 1_000_000;
-        log.info("会话 {} 检索完成：命中 {} 段，向量检索耗时 {} ms，资料拼装 {} ms（共 {} 字），检索词：{}",
-                cid, hits.size(), searchMs, totalMs - searchMs,
-                context.length(), searchQuery);
-        return new RagPlan(systemPrompt, sources);
-    }
-
-    /** 检索结果打包：拼好的提示词 + 引用来源 */
-    private record RagPlan(String systemPrompt, List<SourceRef> sources) {}
-
     // ==================================================================
     // 流式版本：回答一个字一个字往外推
     // ==================================================================
@@ -599,65 +527,6 @@ public class RagChatService {
 
         log.debug("会话 {} 已提交 ReAct 循环到后台执行", cid);
     }
-
-    private void streamWithRag(String cid, String question, StreamSink sink) {
-        RagPlan plan = prepareRag(cid, question);
-
-        if (plan == null) {
-            String text = "知识库还是空的，或者没有找到相关内容。请先在左侧点「加载文档」建立索引，再提问。";
-            conversationService.append(cid,
-                    StoredMessage.assistant(text, List.of(), ChatResponse.MODE_RAG, now()));
-            sink.onMeta(ChatResponse.rag(cid, "", List.of()));
-            sink.onToken(text);
-            sink.onComplete();
-            return;
-        }
-
-        // 引用来源先到，正文后到：前端可以在回答还在蹦的时候就展示"参考了哪些文档"
-        sink.onMeta(ChatResponse.rag(cid, "", plan.sources()));
-
-        StringBuilder buffer = new StringBuilder();
-
-        // 首字延迟（TTFT）打点：流式体验好不好，关键就在"从提问到第一个字出现"等了多久。
-        // 如果这个值很大而"总耗时"不大，说明模型一次性想太久才吐字，
-        // 提示词太长（4 段资料 + 20 条历史）是主要嫌疑。
-        long genStart = System.nanoTime();
-        long[] firstTokenMs = {-1};
-
-        chatClient.prompt()
-                .advisors(memoryAdvisor)
-                .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, cid))
-                .system(plan.systemPrompt())
-                .user(question)
-                .stream()
-                .content()
-                .subscribe(
-                        chunk -> {
-                            if (firstTokenMs[0] < 0) {
-                                firstTokenMs[0] = (System.nanoTime() - genStart) / 1_000_000;
-                            }
-                            buffer.append(chunk);
-                            sink.onToken(chunk);
-                        },
-                        err -> {
-                            log.warn("会话 {} RAG 流式失败（已推 {} 段，共等 {} ms，首字延迟 {} ms）。"
-                                            + "若是 429，说明免费模型限速了，等待片刻重试即可",
-                                    cid, buffer.length(), (System.nanoTime() - genStart) / 1_000_000,
-                                    firstTokenMs[0]);
-                            log.error("失败详情", err);
-                            // 在错误消息里标出阶段，用户一眼就知道该看哪块，不用去猜
-                            // plan 为 null 表示连资料都没检索到，否则说明检索已过、挂在生成阶段
-                            String phase = (plan == null) ? "向量检索" : "回答生成";
-                            sink.onError("【" + phase + "阶段】" + err.getMessage());
-                        },
-                        () -> {
-                            log.info("会话 {} 流式完成：首字延迟 {} ms，总耗时 {} ms，输出 {} 字",
-                                    cid, firstTokenMs[0], (System.nanoTime() - genStart) / 1_000_000,
-                                    buffer.length());
-                            finishStream(cid, buffer, plan.sources(), ChatResponse.MODE_RAG, sink);
-                        });
-    }
-
     /**
      * 流式结束的收尾：把完整答案存档（历史记录里要留全的，不能存半截）
      *
@@ -713,38 +582,7 @@ public class RagChatService {
         }
     }
 
-    /**
-     * 构造检索用的查询词
-     *
-     * 为什么不能直接用当前问题？因为多轮对话里的追问往往是不完整的句子：
-     *   第 1 轮："Spring Boot 怎么配置 SSL？"
-     *   第 2 轮："那证书怎么自动续期？"   ← 单看这句，向量检索根本不知道"证书"指什么
-     * 所以把上一轮的问题拼进来一起检索，命中率会明显提高。
-     *
-     * 更专业的做法是用大模型改写查询（Spring AI 的 RewriteQueryTransformer 就是干这个的），
-     * 代价是每次提问多花一次模型调用。当前这种"拼接"是零成本的近似方案，够用。
-     */
-    private String buildSearchQuery(String conversationId, String question) {
-        List<Message> history = chatMemory.get(conversationId);
-        if (history == null || history.isEmpty()) {
-            return question;
-        }
-
-        String lastUserText = null;
-        for (int i = history.size() - 1; i >= 0; i--) {
-            Message msg = history.get(i);
-            if (msg instanceof UserMessage userMsg) {
-                lastUserText = userMsg.getText();
-                break;
-            }
-        }
-
-        if (lastUserText == null || lastUserText.isBlank()) {
-            return question;
-        }
-        return lastUserText + " " + question;
-    }
-
+    /** 时间戳统一格式，存档和前端展示都用它 */
     private static String now() {
         return LocalDateTime.now().format(TS);
     }

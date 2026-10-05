@@ -1,3 +1,6 @@
+# 🆘 配之前先看 PITFALLS.md（项目根目录），里面 12 个真实踩过的坑
+#    尤其注意「坑 2」：代码里手搓 OpenAiChatOptions 时漏了 .model()，
+#    会退回框架默认的 gpt-5-mini → 百炼直接 404。本项目已踩过一次。
 server:
   port: 8081
 

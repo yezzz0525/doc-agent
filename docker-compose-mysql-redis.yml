@@ -1,0 +1,51 @@
+# MySQL + Redis —— 苍穹外卖等Java 项目常用的配套服务
+#
+# 怎么用（在本文件所在目录打开终端执行）：
+#   启动：docker compose -f docker-compose-mysql-redis.yml up -d
+#   看状态：docker compose -f docker-compose-mysql-redis.yml ps
+#   停止（保留数据）：docker compose -f docker-compose-mysql-redis.yml stop
+#   彻底删除并清空数据：docker compose -f docker-compose-mysql-redis.yml down -v
+#
+# 为什么单独一个文件？
+#   doc-agent 只需要 pgvector，MySQL/Redis 是别的项目要用的。
+#   分开管理互不干扰——删这个文件对应的服务不会碰到 pgvector。
+#
+# 镜像删了不要紧，随时能拉回来（Docker 官方仓库一直有）：
+#   docker pull mysql:8.0 / docker pull redis:7-alpine
+#   本文件里的image 字段写的就是官方镜像名，第一次 up 会自动下载。
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: sky-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456          # root 密码
+      MYSQL_DATABASE: sky_takeout       # 自动建这个库
+      TZ: Asia/Shanghai                # 时区，避免容器内时间差 8 小时
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql# 数据持久化，容器删了还在
+    command:
+      # 苍穹外卖的 sql 文件通常是 GBK 编码，用 utf8mb4 存中文会乱码
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+      - --default-authentication-plugin=mysql_native_password
+
+  redis:
+    image: redis:7-alpine
+    container_name: sky-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command:
+      - redis-server
+      - --appendonly yes               # 开启持久化，重启不丢缓存
+      - --requirepass 123456           # 设密码，Java 配置里要对应上
+
+volumes:
+  mysql-data:
+  redis-data:

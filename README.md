@@ -156,8 +156,9 @@ python tools\check_config.py
 - [x] SSE 流式输出（打字机效果）
 - [x] pgvector 替换内存向量库（已启用：HNSW 索引 + 余弦距离，切换只需改一行配置）
 - [x] 限速韧性：指数退避重试 + 加载节流 + 全局异常翻译（免费模型必备）
-- [ ] Tool Use（Function Calling）
-- [ ] ReAct 推理-行动循环
+- [x] Tool Use（Function Calling）—— 知识库工具化，从「意图路由」升级为「Agent」
+- [x] 联网搜索（百炼 `enable_search`）—— 实时信息由模型自己决定要不要联网
+- [ ] ReAct 推理-行动循环　← **下一个**
 - [ ] MCP Server 化（接入 Claude / Cursor）
 - [ ] 评测集 + 检索准确率、可观测 Trace
 

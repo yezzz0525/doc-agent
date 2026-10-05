@@ -45,16 +45,18 @@ public class TokenUsageService {
     /**
      * 成本估算用的单价（元 / 百万 token）
      *
-     * <p>来源（2026-10 公开价格，用于给用户一个数量级感知，不是账单）：
+     * <p>来源（2026-10 阿里云百炼公开价格，用于给用户一个数量级感知，不是账单）：
      * <ul>
-     *   <li>智谱 GLM-4.7-Flash：免费档 0 元；付费参考价 输入 0.5 元 / 输出 2 元 每百万</li>
-     *   <li>硅基流动 BAAI/bge-m3：免费档 0 元；付费档 0.5 元 每百万</li>
+     *   <li>百炼 qwen-flash：输入 0.18 元 / 输出 1.8 元 每百万</li>
+     *   <li>硅基流动 BAAI/bge-m3：免费模型 0 元（需实名认证，有速率上限）</li>
      * </ul>
-     * 当前两个模型都在免费档，所以这里算出来的成本恒为 0。
-     * 留着这个字段是为了以后换付费模型时能立刻看出量级。
+     *
+     * <p><b>2026-10 变更</b>：对话模型从智谱 GLM-4.7-Flash 换成了百炼 qwen-flash，
+     * 单价随之改掉。这个常量必须跟着 {@code application.yaml} 里的
+     * {@code spring.ai.openai.chat.model} 一起改，否则显示的费用是错的。
      */
-    private static final double ZHIPU_INPUT_PRICE_PER_MILLION = 0.5;
-    private static final double ZHIPU_OUTPUT_PRICE_PER_MILLION = 2.0;
+    private static final double CHAT_INPUT_PRICE_PER_MILLION = 0.18;
+    private static final double CHAT_OUTPUT_PRICE_PER_MILLION = 1.8;
 
     /**
      * 累加一次调用的用量
@@ -95,8 +97,8 @@ public class TokenUsageService {
     public TokenUsage snapshot() {
         long p = promptTokens.get();
         long c = completionTokens.get();
-        double cost = (p / 1_000_000.0) * ZHIPU_INPUT_PRICE_PER_MILLION
-                + (c / 1_000_000.0) * ZHIPU_OUTPUT_PRICE_PER_MILLION;
+        double cost = (p / 1_000_000.0) * CHAT_INPUT_PRICE_PER_MILLION
+                + (c / 1_000_000.0) * CHAT_OUTPUT_PRICE_PER_MILLION;
         return new TokenUsage(p, c, p + c, requestCount.get(), cost);
     }
 

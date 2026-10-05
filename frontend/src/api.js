@@ -124,6 +124,8 @@ function handleEvent(raw, handlers) {
   if (name === 'meta' && handlers.onMeta) handlers.onMeta(payload)
   else if (name === 'token' && handlers.onToken) handlers.onToken(payload)
   else if (name === 'sources' && handlers.onSources) handlers.onSources(payload)
+  // ReAct 循环的进度提示（可选事件，只有走 ReAct 的问题才有）
+  else if (name === 'step' && handlers.onStep) handlers.onStep(payload)
   else if (name === 'error' && handlers.onError) handlers.onError(payload)
   else if (name === 'done' && handlers.onDone) handlers.onDone()
 }

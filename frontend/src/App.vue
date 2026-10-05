@@ -240,6 +240,23 @@ async function send(preset) {
       },
 
       /**
+       * ReAct 循环的进度提示
+       *
+       * 模型要先调工具、看到结果才开始写正文，中间会有几秒停顿。
+       * 没有这个提示，用户看到的就是"转圈但一个字都不出"，以为卡死了。
+       *
+       * 每一轮都把上一轮的提示换成新的，用户能直观看到
+       * 「正在检索事务失效」→「正在换个关键词再查」这样的推进过程。
+       */
+      onStep: (info) => {
+        if (!info || !info.summary) return
+        Object.assign(messages.value[replyIndex], {
+          step: info.summary,
+          pending: false
+        })
+      },
+
+      /**
        * 引用来源（Tool Use 模式才有）
        *
        * 模型是「先调用知识库工具、拿到结果之后才开始回答」，所以引用来源
@@ -266,7 +283,7 @@ async function send(preset) {
             '如果频繁出现，可以在 `application.yaml` 里把 `doc-agent.embedding.qps` 调小（比如 2）。'
         } else if (/401|Token is invalid|令牌|余额不足|unauthorized/i.test(text)) {
           friendly = '**API Key 不可用**\n\n请检查 IDEA 运行配置里的环境变量：' +
-            '`ZHIPU_API_KEY`（智谱对话）和 `SILICONFLOW_API_KEY`（硅基流动向量）。'
+            '`DASHSCOPE_API_KEY`（百炼对话）和 `SILICONFLOW_API_KEY`（硅基流动向量）。'
         } else {
           friendly = '**生成失败：** ' + text
         }

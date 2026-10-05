@@ -97,6 +97,48 @@ public class RagChatService {
                前面端会渲染成 nicer 的排版。
             """;
 
+    /**
+     * ReAct 循环用的系统提示词（技术问题专用）
+     *
+     * <h3>这段提示词就是 ReAct 的"方向盘"</h3>
+     * 循环本身只是"调模型 → 执行工具 → 再调模型"的骨架，<b>模型为什么愿意多查几轮，
+     * 完全由这段提示词决定</b>。三段设计对应三个目标：
+     *
+     * <ol>
+     *   <li><b>告诉它有工具可用</b>——否则模型不知道能查知识库，直接凭记忆答了</li>
+     *   <li><b>明确"不够就再查"的判据</b>（第 2 条）——这是让循环真正跑起来的关键，
+     *       不写这一条，模型基本一轮就收工</li>
+     *   <li><b>防幻觉的硬约束</b>（第 3 条）——技术细节编错比答不上来危害更大</li>
+     * </ol>
+     *
+     * <p>对比旧的 RAG 提示词：那时候资料是<b>我拼好塞进去的</b>，模型没有选择权；
+     * 现在资料是<b>模型自己一次次查回来的</b>，它知道"我查过什么、还缺什么"。
+     * 这就是从「问答系统」到「Agent」的差别。
+     */
+    private static final String REACT_SYSTEM_PROMPT = """
+            你是 Spring 技术文档助手。你有一个知识库工具可以查Spring 官方文档，
+            你需要主动、反复地用它，直到资料足够回答问题为止。
+
+            工作方式：
+            1. 先思考用户的问题需要什么资料，然后调用 searchSpringDocs 检索。
+            2. **判断资料够不够**——这是最重要的一步：
+               · 太笼统（比如只讲概念不讲具体 API / 参数 / 配置项）→ 换一个更具体的关键词再查一次
+               · 没覆盖用户问的某个方面 → 针对那个方面再查一次
+               · 不确定知识库里有没有 → 先调 listKnowledgeBaseTopics 看看有哪些主题
+               · 资料已经很具体了 → 直接回答，不要多查
+            3. 最多检索 5 轮。同一个关键词不要重复查两次，那样不会得到新结果。
+
+            回答要求：
+            1. **只根据检索到的资料回答**。资料里没有的，就说明"文档里没有提到"，
+               绝不编造类名、注解、参数名、API 名称、版本号——编错的技术细节比答不上来危害更大。
+            2. 用中文回答，语气专业但平易近人。
+            3. 用 Markdown 排版：小节用 ### 标题，关键配置项用 `代码` 包裹，
+               配置示例或代码用 ``` 代码块，并列的要点用 - 列表。
+            4. 不要罗列文件名，也不要写"根据参考资料""检索结果"——引用来源会单独展示给用户。
+            5. 回答长度适中，直接回答问题本身，不要展开无关内容。
+            6. 用户可能在追问上一轮的问题，结合对话历史理解他在问什么。
+            """;
+
     private final ChatClient chatClient;
     /** 闲聊专用：开启了百炼的联网搜索（enable_search），能回答"今天天气"这类实时问题 */
     private final ChatClient webSearchChatClient;
@@ -106,6 +148,22 @@ public class RagChatService {
     private final ChatMemory chatMemory;
     private final ConversationService conversationService;
     private final IntentRouter intentRouter;
+    /** ReAct 循环：技术分支走它，模型可以反复调工具直到满意 */
+    private final ReActAgentService reActAgent;
+    /**
+     * 跑ReAct 循环用的线程池
+     *
+     * <p>为什么需要：ReAct 循环是同步阻塞的（要等工具执行完才能调下一轮），
+     * 直接在 SSE 的请求线程里跑会把通道堵住，前端看到的是"一直转圈"。
+     * 丢到线程池里跑，主线程立刻返回，step 进度事件才有空隙推给前端。
+     */
+    private final java.util.concurrent.Executor taskExecutor =
+            java.util.concurrent.Executors.newFixedThreadPool(8, r -> {
+                Thread t = new Thread(r, "react-agent");
+                // 设成守护线程：JVM 退出时不因为它卡住
+                t.setDaemon(true);
+                return t;
+            });
 
     /** 记忆 Advisor：负责在每次调用模型前后，自动"读取历史"和"保存本轮对话" */
     private final MessageChatMemoryAdvisor memoryAdvisor;
@@ -116,6 +174,7 @@ public class RagChatService {
                           ConversationService conversationService,
                           IntentRouter intentRouter,
                           DocSearchTool docSearchTool,
+                          ReActAgentService reActAgent,
                           @org.springframework.beans.factory.annotation.Value(
                                   "${doc-agent.web-search.enabled:true}") boolean webSearchEnabled,
                           @org.springframework.beans.factory.annotation.Value(
@@ -127,6 +186,7 @@ public class RagChatService {
         this.chatMemory = chatMemory;
         this.conversationService = conversationService;
         this.intentRouter = intentRouter;
+        this.reActAgent = reActAgent;
         this.memoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory).build();
     }
 
@@ -259,40 +319,73 @@ public class RagChatService {
     // 路线二：RAG（检索文档 → 看着资料回答 → 带引用）
     // ==================================================================
 
+    /**
+     * 技术问题：走 ReAct 循环
+     *
+     * <h3>为什么这里改成ReAct 而不是"先检索再拼提示词"</h3>
+     * 旧流程（{@code prepareRag}）是<b>一次性</b>的：检索 4 段 → 塞进提示词 → 生成。
+     * 问题是这 4 段不一定够——用户问"SSLSocketFactory 怎么配"，泛泛检索很可能
+     * 只召回 SSL 的概述性段落，回答就变成"请参考官方文档"这种废话。
+     *
+     * <p>ReAct 的价值是<b>让模型自己再查</b>：
+     * <pre>
+     *   第 1 轮：查「SSLSocketFactory」→ 拿到概述性段落
+     *   观察：不够具体，没有具体的 setNeedClientAuth 参数
+     *   第 2 轮：改查「SSLSocketFactory needClientAuth 配置」→ 拿到准确的 API 说明
+     *   回答：现在资料够了
+     * </pre>
+     * 判断"够不够"的是模型，不是我的 if-else —— 这才是 Agent。
+     */
     private ChatResponse answerWithRag(String cid, String question) {
-        // ===== 第 2 步：检索（检索 + 拼提示词 + 整理引用，都收在 prepareRag 里）=====
-        RagPlan plan = prepareRag(cid, question);
-
-        if (plan == null) {
-            // 知识库空时直接返回，不调模型——这样也避免把"查不到"写进对话记忆
+        // 知识库空着就别进循环了，模型查了也是空，直接提示更省 token
+        if (!hasKnowledgeBase()) {
             String text = "知识库还是空的，或者没有找到相关内容。请先在左侧点「加载文档」建立索引，再提问。";
             conversationService.append(cid,
                     StoredMessage.assistant(text, List.of(), ChatResponse.MODE_RAG, now()));
             return ChatResponse.rag(cid, text, List.of());
         }
 
-        // ===== 第 5 步：调用模型（带对话记忆）=====
-        long genStart = System.nanoTime();
-        String answer = chatClient.prompt()
-                .advisors(memoryAdvisor)
-                // 指定本次对话属于哪个会话——不同会话的记忆互不干扰
-                .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, cid))
-                .system(plan.systemPrompt())
-                .user(question)
-                .call()
-                .content();
-        log.info("会话 {} 模型生成完毕，耗时 {} ms，正文 {} 字", cid,
-                (System.nanoTime() - genStart) / 1_000_000, answer == null ? 0 : answer.length());
+        long t0 = System.nanoTime();
+        ReActAgentService.ReactResult result = reActAgent.run(
+                REACT_SYSTEM_PROMPT,
+                question,
+                new Object[]{docSearchTool},
+                Map.of("conversationId", cid == null ? "" : cid),
+                null);
 
-        if (answer == null || answer.isBlank()) {
-            answer = "（模型这次没有返回内容，可以换个问法再试一次）";
-        }
+        String answer = (result.answer() == null || result.answer().isBlank())
+                ? "（模型这次没有返回内容，可以换个问法再试一次）"
+                : result.answer();
 
-        // ===== 第 6 步：存档模型这句话 =====
+        // 多轮检索会各自暂存引用，这里取最后一次并合并成不重复的列表
+        List<SourceRef> sources = mergeAllSources(cid);
+
+        log.info("会话 {} ReAct 结束：{}，总耗时 {} ms，引用 {} 段",
+                cid, result, (System.nanoTime() - t0) / 1_000_000, sources.size());
+
         conversationService.append(cid,
-                StoredMessage.assistant(answer, plan.sources(), ChatResponse.MODE_RAG, now()));
+                StoredMessage.assistant(answer, sources, ChatResponse.MODE_RAG, now()));
 
-        return ChatResponse.rag(cid, answer, plan.sources());
+        return ChatResponse.rag(cid, answer, sources);
+    }
+
+    /** 合并多轮 ReAct 检索累积的引用来源（去重，保留分数更高的） */
+    private List<SourceRef> mergeAllSources(String cid) {
+        return reActAgent.mergeSources(List.of(), docSearchTool.takeSources(cid));
+    }
+
+    /** 知识库有没有东西（进循环前的快速判断，省得白跑一轮） */
+    private boolean hasKnowledgeBase() {
+        try {
+            List<Document> probe = vectorStore.similaritySearch(SearchRequest.builder()
+                    .query("Spring")
+                    .topK(1)
+                    .build());
+            return probe != null && !probe.isEmpty();
+        } catch (Exception e) {
+            log.warn("探测知识库是否为空时出错：{}", e.getMessage());
+            return false;
+        }
     }
 
     /**
@@ -391,7 +484,8 @@ public class RagChatService {
         if (intent == IntentRouter.Intent.CHAT) {
             streamChitchat(cid, question, sink);
         } else {
-            streamWithRag(cid, question, sink);
+            // 技术问题走 ReAct 循环：模型自己决定查几轮、不够就换词再查
+            streamWithReAct(cid, question, sink);
         }
     }
 
@@ -438,6 +532,74 @@ public class RagChatService {
     }
 
     /** 流式 · RAG */
+    /**
+     * 流式 · 技术问题（走 ReAct 循环）
+     *
+     * <h3>为什么不能像闲聊那样直接 .stream()</h3>
+     * ReAct 循环是<b>同步阻塞</b>的：第 1 轮模型只返回工具调用（没有正文），
+     * 要等工具执行完、第 2 轮才吐字。如果直接同步跑，SSE 通道会一直空着，
+     * 前端那边就是"转圈但一个字不出"。
+     *
+     * <p>所以做法是：<b>丢到后台线程跑循环，把进度用 step 事件推给前端，
+     * 最后把答案一次性作为 token 推出去</b>。
+     *
+     * <p>代价：ReAct 回答<b>没有逐字打字机效果</b>（本来就是先思考后回答，
+     * 强行逐字反而更怪）。换来的是"能看到它在查什么"，这比打字机更有价值——
+     * 用户知道了 {step 提示}，就知道系统没卡死。
+     */
+    private void streamWithReAct(String cid, String question, StreamSink sink) {
+        if (!hasKnowledgeBase()) {
+            String text = "知识库还是空的，或者没有找到相关内容。请先在左侧点「加载文档」建立索引，再提问。";
+            conversationService.append(cid,
+                    StoredMessage.assistant(text, List.of(), ChatResponse.MODE_RAG, now()));
+            sink.onMeta(ChatResponse.rag(cid, "", List.of()));
+            sink.onToken(text);
+            sink.onComplete();
+            return;
+        }
+
+        // meta 先发：告诉前端这是走知识库的分支
+        sink.onMeta(ChatResponse.rag(cid, "", List.of()));
+
+        long t0 = System.nanoTime();
+        // 用 Spring 的任务执行器跑循环，不要 new Thread（线程池可控、异常有处理）
+        taskExecutor.execute(() -> {
+            try {
+                ReActAgentService.ReactResult result = reActAgent.run(
+                        REACT_SYSTEM_PROMPT,
+                        question,
+                        new Object[]{docSearchTool},
+                        Map.of("conversationId", cid == null ? "" : cid),
+                        (iteration, toolName, summary) -> sink.onStep(iteration, summary));
+
+                String answer = (result.answer() == null || result.answer().isBlank())
+                        ? "（模型这次没有返回内容，可以换个问法再试一次）"
+                        : result.answer();
+
+                List<SourceRef> sources = mergeAllSources(cid);
+                if (!sources.isEmpty()) {
+                    sink.onSources(sources);
+                }
+
+                log.info("会话 {} ReAct 流式结束：{}，总耗时 {} ms，引用 {} 段",
+                        cid, result, (System.nanoTime() - t0) / 1_000_000, sources.size());
+
+                // ReAct 循环是最后才拿到完整答案的，这里作为一整段推送
+                sink.onToken(answer);
+                conversationService.append(cid,
+                        StoredMessage.assistant(answer, sources, ChatResponse.MODE_RAG, now()));
+                sink.onComplete();
+
+            } catch (Exception e) {
+                log.error("会话 {} ReAct 循环异常", cid, e);
+                sink.onError("【ReAct 循环】" + (e.getMessage() == null
+                        ? e.getClass().getSimpleName() : e.getMessage()));
+            }
+        });
+
+        log.debug("会话 {} 已提交 ReAct 循环到后台执行", cid);
+    }
+
     private void streamWithRag(String cid, String question, StreamSink sink) {
         RagPlan plan = prepareRag(cid, question);
 

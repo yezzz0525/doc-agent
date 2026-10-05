@@ -14,18 +14,20 @@
 - **会话管理**：侧边栏新建 / 切换 / 重命名 / 删除会话，重启不丢
 - **联网搜索**：百炼 `enable_search` 实时信息（天气/新闻/版本号），回答末尾列出参考链接
 - **工具调用**：知识库包装成 `@Tool`，**用不用、什么时候用由模型自己决定**
+- **ReAct 循环**：模型**反复调工具直到资料够用**，工具不够就换个词再查（手写循环 + 轮数上限 + 失败降级）
+- **检索进度可见**：ReAct 每一步都推`step` 事件，前端显示"正在检索「事务失效」"，不会以为卡死
 - **免费模型**：对话用百炼 qwen-flash，向量用硅基流动 bge-m3，月成本约 1~3 元
 
 ## 技术栈
 
-| 层    | 技术                                                     |
-| ---- | ------------------------------------------------------ |
-| 后端   | Java 17 · Spring Boot 4.1 · Spring AI 2.0（OpenAI 兼容协议） |
-| 前端   | Vue 3 · Vite · markdown-it · highlight.js              |
-| 对话模型 | 阿里云百炼 qwen-flash（输入 0.18 / 输出 1.8 元每百万 token） |
-| 向量模型 | 硅基流动 BAAI/bge-m3（免费，1024 维）                            |
+| 层    | 技术                                                                   |
+| ---- | -------------------------------------------------------------------- |
+| 后端   | Java 17 · Spring Boot 4.1 · Spring AI 2.0（OpenAI 兼容协议）               |
+| 前端   | Vue 3 · Vite · markdown-it · highlight.js                            |
+| 对话模型 | 阿里云百炼 qwen-flash（输入 0.18 / 输出 1.8 元每百万 token）                        |
+| 向量模型 | 硅基流动 BAAI/bge-m3（免费，1024 维）                                          |
 | 向量库  | PostgreSQL 16 + pgvector 0.8（Docker 容器）／ SimpleVectorStore（改一行配置可切回） |
-| 会话存储 | JSON 文件落盘，规划换 MySQL                                    |
+| 会话存储 | JSON 文件落盘，规划换 MySQL                                                  |
 
 ## 架构
 
@@ -38,15 +40,16 @@ flowchart TD
         C[controller ApiController] --> S[service]
         S --> R{IntentRouter 意图路由}
         R -- "寒暄/通用" --> CHAT[普通对话分支<br/>可联网搜索<br/>可自主调用知识库工具]
-        R -- "技术问题" --> RAG[RAG 分支<br/>向量检索 → 拼 Prompt]
+        R -- "技术问题" --> REACT["ReAct 循环（手写）<br/>思考→行动→观察<br/>最多 5 轮"]
     end
 
-    RAG --> V[("PostgreSQL · pgvector<br/>表 vector_store<br/>HNSW 索引")]
-    RAG --> EMB[硅基流动 bge-m3<br/>查询向量化]
+    REACT --> TOOL1["searchSpringDocs<br/>检索知识库"]
+    REACT --> TOOL2["listKnowledgeBaseTopics<br/>看看库里有什么"]
+    TOOL1 --> V[("PostgreSQL · pgvector<br/>表 vector_store<br/>HNSW 索引")]
+    TOOL2 --> V
     CHAT --> LLM[百炼 qwen-flash<br/>generate + enable_search]
-    RAG --> LLM
-    CHAT -.->|"模型自主决定"| TOOL["searchSpringDocs<br/>@Tool"]
-    TOOL --> V
+    REACT --> LLM
+    REACT -.->|"每轮推 step 事件"| FE
     S --> CONV[(conversations.json<br/>会话历史)]
     BE -- "回答 + 引用来源 + mode" --> FE
 ```
@@ -80,24 +83,27 @@ doc-agent
     │   ├── ChatController.java    /ai/chat 调试接口
     │   └── DocController.java     /doc/** 调试接口（地址栏直调）
     ├── service/
-    │   ├── DocumentService.java   加载文档、切分、向量化、索引落盘
-    │   ├── RagChatService.java    问答主流程：检索 → 生成 → 记忆 → 落盘（含流式版）
-│   ├── StreamSink.java        流式回调接口：让 service 不依赖 SSE/WebSocket 等传输方式
-    │   ├── IntentRouter.java      意图路由（白名单 + 模型分类）
+    │   ├── DocumentService.java      加载文档、切分、向量化、索引落盘
+    │   ├── RagChatService.java       问答主流程：意图路由 → 分支 → 记忆 → 落盘（含流式版）
+    │   ├── ReActAgentService.java    ReAct 循环：思考→行动→观察，含轮数上限与失败降级
+    │   ├── DocSearchTool.java        知识库检索工具（@Tool），模型自己决定用不用
+    │   ├── StreamSink.java           流式回调接口：让 service 不依赖 SSE/WebSocket 等传输方式
+    │   ├── IntentRouter.java         意图路由（白名单 + 模型分类）
+    │   ├── TokenUsageService.java    token 用量与成本估算
     │   └── ConversationService.java  会话历史读写
-    └── dto/                       ChatRequest/Response、SourceRef、Conversation 等
+    ├── dto/                       ChatRequest/Response、SourceRef、Conversation 等
 ```
 
 ## 快速开始
 
 前置：JDK 17+、Node.js 18+、Docker Desktop（向量库跑在容器里）、两个 API Key：
 
-| Key | 从哪拿 | 用途 |
-|---|---|---|
-| `DASHSCOPE_API_KEY` | [百炼控制台](https://bailian.console.aliyun.com/) 左侧「API-KEY」 | 对话模型（qwen-flash）+ 联网搜索 |
-| `SILICONFLOW_API_KEY` | [硅基流动](https://cloud.siliconflow.cn/account/ak)（需实名） | 向量模型（bge-m3） |
+| Key                   | 从哪拿                                                      | 用途                     |
+| --------------------- | -------------------------------------------------------- | ---------------------- |
+| `DASHSCOPE_API_KEY`   | [百炼控制台](https://bailian.console.aliyun.com/) 左侧「API-KEY」 | 对话模型（qwen-flash）+ 联网搜索 |
+| `SILICONFLOW_API_KEY` | [硅基流动](https://cloud.siliconflow.cn/account/ak)（需实名）     | 向量模型（bge-m3）           |
 
-> 两个 Key **缺一不可**：问技术问题要检索文档（用硅基流动），闲聊和联网要用对话模型（用百炼）。
+> 两个 Key **缺一不可**：问技术问题要检索文档（用硅基流动），闲聊和联网要用对话模型（用百炼）。>   
 > 配完建议先跑一次自检：`python tools\check_config.py`，它会直接告诉你是哪个环节有问题。
 
 **0. 启动数据库**（Docker Desktop 要先双击启动，等右下角鲸鱼图标变绿）
@@ -121,7 +127,7 @@ npm install
 npm run dev        # 打开 http://localhost:5173
 ```
 
-**3. 建知识库**：页面右上点「加载文档」，等索引构建完成即可提问。
+**3. 建知识库**：页面右上点「加载文档」，等索引构建完成即可提问。  
 向量会写进 PostgreSQL 的 `vector_store` 表，重启后自动恢复，不用重建。
 
 **4. 自检（可选但推荐）**
@@ -130,23 +136,23 @@ npm run dev        # 打开 http://localhost:5173
 python tools\check_config.py
 ```
 
-6 项体检：环境变量、配置、两个 Key 的连通性、向量库、端到端冒烟测试。
-出问题时它会直接说人话（"Key 无效"、"模型名不存在"、"域名写错"），
+6 项体检：环境变量、配置、两个 Key 的连通性、向量库、端到端冒烟测试。  
+出问题时它会直接说人话（"Key 无效"、"模型名不存在"、"域名写错"），  
 而不是让你去猜一串 `UnauthorizedException`。
 
 ## API 一览（前缀 /api）
 
-| 方法     | 路径                  | 说明                                    |
-| ------ | ------------------- | ------------------------------------- |
-| GET    | /status             | 知识库状态（片段数、模型名）                        |
-| GET    | /usage              | token 用量（本次运行累计：输入/输出/次数/成本估算）      |
-| POST   | /load               | 加载文档建索引（`?dir=&maxFiles=`）            |
-| POST   | /chat               | 提问，body: `{conversationId, question}` |
+| 方法     | 路径                  | 说明                                          |
+| ------ | ------------------- | ------------------------------------------- |
+| GET    | /status             | 知识库状态（片段数、模型名）                              |
+| GET    | /usage              | token 用量（本次运行累计：输入/输出/次数/成本估算）              |
+| POST   | /load               | 加载文档建索引（`?dir=&maxFiles=`）                  |
+| POST   | /chat               | 提问，body: `{conversationId, question}`       |
 | POST   | /chat/stream        | 提问（SSE 流式），事件：`meta`/`token`/`done`/`error` |
-| GET    | /conversations      | 会话列表（摘要）                              |
-| GET    | /conversations/{id} | 会话完整内容                                |
-| PATCH  | /conversations/{id} | 重命名                                   |
-| DELETE | /conversations/{id} | 删除会话                                  |
+| GET    | /conversations      | 会话列表（摘要）                                    |
+| GET    | /conversations/{id} | 会话完整内容                                      |
+| PATCH  | /conversations/{id} | 重命名                                         |
+| DELETE | /conversations/{id} | 删除会话                                        |
 
 另有调试接口：`GET /ai/chat?q=`、`GET /doc/load?dir=&maxFiles=`、`GET /doc/ask?question=`。
 
@@ -158,7 +164,7 @@ python tools\check_config.py
 - [x] 限速韧性：指数退避重试 + 加载节流 + 全局异常翻译（免费模型必备）
 - [x] Tool Use（Function Calling）—— 知识库工具化，从「意图路由」升级为「Agent」
 - [x] 联网搜索（百炼 `enable_search`）—— 实时信息由模型自己决定要不要联网
-- [ ] ReAct 推理-行动循环　← **下一个**
+- [x] ReAct 推理-行动循环（手写循环，含轮数上限、失败降级、进度事件）
 - [ ] MCP Server 化（接入 Claude / Cursor）
 - [ ] 评测集 + 检索准确率、可观测 Trace
 
@@ -173,19 +179,19 @@ docker compose ps             # 看到 doc-agent-pg 是 healthy 就算好了
 
 应用侧由 `application.yaml` 的 `doc-agent.vector-store.type` 决定用哪套，两套都留着：
 
-| 对比 | SimpleVectorStore（`type: simple`） | PostgreSQL + pgvector（`type: pgvector`，当前） |
-|---|---|---|
-| 持久化 | 靠 save/load 落盘 JSON | 本来就在库里，重启自动在 |
-| 数据量 | 几千片段以内 | 十万级以上 |
-| 多实例共享 | 不行 | 可以 |
-| 检索加速 | 全量线性扫描 | HNSW 近似索引（`spring_ai_vector_index`） |
-| 距离度量 | 余弦 | 余弦（`vector_cosine_ops`） |
-| 依赖 | 无，零配置 | 需要 Docker Desktop 常驻 |
+| 对比    | SimpleVectorStore（`type: simple`） | PostgreSQL + pgvector（`type: pgvector`，当前） |
+| ----- | --------------------------------- | ------------------------------------------ |
+| 持久化   | 靠 save/load 落盘 JSON               | 本来就在库里，重启自动在                               |
+| 数据量   | 几千片段以内                            | 十万级以上                                      |
+| 多实例共享 | 不行                                | 可以                                         |
+| 检索加速  | 全量线性扫描                            | HNSW 近似索引（`spring_ai_vector_index`）        |
+| 距离度量  | 余弦                                | 余弦（`vector_cosine_ops`）                    |
+| 依赖    | 无，零配置                             | 需要 Docker Desktop 常驻                       |
 
 切换后必须重新点一次「加载文档」（两套库各存各的，不会自动迁移）。
 
-**想切回内存版**：把 `type` 改回 `simple`、重启应用即可，**不需要动任何文件** ——
-`data/vector-index.json` 一直原地保留着（pgvector 模式的落盘逻辑直接跳过，
+**想切回内存版**：把 `type` 改回 `simple`、重启应用即可，**不需要动任何文件** ——  
+`data/vector-index.json` 一直原地保留着（pgvector 模式的落盘逻辑直接跳过，  
 从不覆盖它），切回去时那 319 个片段还在，秒级恢复。
 
 **排查小抄**：
@@ -198,18 +204,18 @@ docker compose stop                         # 停库（不影响代码和数据�
 docker compose down -v                      # 删库（数据一并清空，慎用）
 ```
 
-> 表结构由应用自动创建（`initializeSchema`），首次启动时会建 `vector_store` 表
-> 和 HNSW 索引，无需手动执行 DDL。`embedding` 列是 `vector(1024)`，
+> 表结构由应用自动创建（`initializeSchema`），首次启动时会建 `vector_store` 表>   
+> 和 HNSW 索引，无需手动执行 DDL。`embedding` 列是 `vector(1024)`，>   
 > 改 embedding 模型维度时必须同步改 `doc-agent.vector-store.dimensions` 并重建索引。
 >
-> `id` 列是 **TEXT**（不是 UUID），因为片段主键用的是"文件名#序号"这种可读且稳定的
-> ID，重复加载文档时靠主键冲突走 `ON CONFLICT DO UPDATE` 覆盖，不会插出重复数据。
-> 若要改主键类型或表结构，**必须删表重建**（表里 0 行时最省事）：
+> `id` 列是 **TEXT**（不是 UUID），因为片段主键用的是"文件名#序号"这种可读且稳定的>   
+> ID，重复加载文档时靠主键冲突走 `ON CONFLICT DO UPDATE` 覆盖，不会插出重复数据。>   
+> 若要改主键类型或表结构，**必须删表重建**（表里 0 行时最省事）：>   
 > `docker exec -it doc-agent-pg psql -U docagent -d docagent -c "drop table vector_store;"`
 
 ## 免费模型的限速与自动重试
 
-硅基流动的免费模型 `BAAI/bge-m3` 有**固定速率上限**。加载 87 篇文档会切出 319 段，
+硅基流动的免费模型 `BAAI/bge-m3` 有**固定速率上限**。加载 87 篇文档会切出 319 段，  
 即使每批 8 段也要在几秒内打出 40 次请求，很容易撞到：
 
 ```
@@ -218,27 +224,27 @@ com.openai.errors.RateLimitException: 429: 您的账户已达速率限制，请�
 
 429 是「等一下就好」而不是「请求错了」，所以本项目做了三件事，从预防到补救：
 
-| 层次 | 做法 | 代码位置 |
-|---|---|---|
+| 层次     | 做法                                            | 代码位置                                  |
+| ------ | --------------------------------------------- | ------------------------------------- |
 | ① 主动限速 | **客户端令牌桶**：每秒最多发 qps 个请求，超出的**排队等**，根本不会打撞服务端 | `RetryEmbeddingModel.acquirePermit()` |
-| ② 主动节流 | 加载时每批 4 段、批间停顿 150ms，把请求摊开 | `DocumentService.loadDocs()` |
-| ③ 自动补救 | 真的撞限速了自动重试 3 次，等待 1s → 2s → 4s 指数退避 + 随机抖动 | `RetryEmbeddingModel.withRetry()` |
-| ④ 友好提示 | 3 次仍失败时返回「等 10~20 秒再试」，而不是甩一串英文 | `GlobalExceptionHandler` |
+| ② 主动节流 | 加载时每批 4 段、批间停顿 150ms，把请求摊开                    | `DocumentService.loadDocs()`          |
+| ③ 自动补救 | 真的撞限速了自动重试 3 次，等待 1s → 2s → 4s 指数退避 + 随机抖动    | `RetryEmbeddingModel.withRetry()`     |
+| ④ 友好提示 | 3 次仍失败时返回「等 10~20 秒再试」，而不是甩一串英文               | `GlobalExceptionHandler`              |
 
-**为什么客户端限速比"被拒绝再重试"好？**
-服务端拒绝是"出了错再补救"，重试期间用户看到的是失败或长时间等待；
+**为什么客户端限速比"被拒绝再重试"好？**  
+服务端拒绝是"出了错再补救"，重试期间用户看到的是失败或长时间等待；  
 客户端排队是"根本没打超"，用户只是觉得慢一点，但**一定成功**。
 
-**为什么重试要加随机抖动？** 多个请求同时被限流后，如果都按固定时间重发，会再次同时触发限流，
+**为什么重试要加随机抖动？** 多个请求同时被限流后，如果都按固定时间重发，会再次同时触发限流，  
 形成「惊群」。叠加 0~500ms 随机值能打散重试时刻。
 
-**为什么只对 429 / 5xx / 网络异常重试，401 不重试？**
-401 是 Key 错了，重试 100 次结果一样 —— 让它干等 7 秒才报错是折磨。
+**为什么只对 429 / 5xx / 网络异常重试，401 不重试？**  
+401 是 Key 错了，重试 100 次结果一样 —— 让它干等 7 秒才报错是折磨。  
 所以 `isRetryable()` 明确把 401/403/400 归为「不可重试」，立刻失败。
 
-**为什么用装饰器而不是改业务代码？** 真正调模型的是 Spring AI 内部的 `PgVectorStore`，
-业务层插不上手。`RetryEmbeddingModel` 把原模型包一层后放回容器
-（`RagConfig` 里的 `BeanPostProcessor`），**所有经过的 embedding 调用自动获得限速+重试能力**，
+**为什么用装饰器而不是改业务代码？** 真正调模型的是 Spring AI 内部的 `PgVectorStore`，  
+业务层插不上手。`RetryEmbeddingModel` 把原模型包一层后放回容器  
+（`RagConfig` 里的 `BeanPostProcessor`），**所有经过的 embedding 调用自动获得限速+重试能力**，  
 业务代码一行不用改，以后换模型也不用重新加。
 
 可调参数（`application.yaml`）：
@@ -255,13 +261,13 @@ doc-agent:
 
 ### 想换向量模型的话
 
-当前用硅基流动 bge-m3（免费）。限速是免费服务的固有属性，代码层只能缓解不能消除。
+当前用硅基流动 bge-m3（免费）。限速是免费服务的固有属性，代码层只能缓解不能消除。  
 真要换，得注意**换向量模型一定要重建索引**（向量空间变了）：
 
-| 备选 | 成本 | 备注 |
-|---|---|---|
-| 换百炼 `text-embedding-v3` | 0.5 元/百万 token。重建索引一次约 **0.13 元**，之后每次提问约 **0.0004 元** | 同一个 Key 就能用；**必须重建索引** |
-| 本地 Ollama 跑 bge-m3 | 免费、无限速、不依赖网络 | 装 Ollama + 下 1.2GB 模型；**必须重建索引**；面试加分项 |
+| 备选                      | 成本                                                     | 备注                                     |
+| ----------------------- | ------------------------------------------------------ | -------------------------------------- |
+| 换百炼 `text-embedding-v3` | 0.5 元/百万 token。重建索引一次约 **0.13 元**，之后每次提问约 **0.0004 元** | 同一个 Key 就能用；**必须重建索引**                 |
+| 本地 Ollama 跑 bge-m3      | 免费、无限速、不依赖网络                                           | 装 Ollama + 下 1.2GB 模型；**必须重建索引**；面试加分项 |
 
 > 有付费额度或换到不限速的向量服务时，把 `qps` 调大、`batch-delay-ms` 调小、`batch-size` 调大即可。
 
@@ -278,25 +284,26 @@ doc-agent:
 会话 xxx 流式完成：首字延迟 860 ms，总耗时 3400 ms，输出 412 字
 ```
 
-| 指标 | 正常 | 太慢说明什么 |
-|---|---|---|
-| `首字延迟` | 0.5~1.5 秒 | 提示词太长（4 段资料 + 20 条历史 ≈ 3000+ token），模型读完才吐字 |
-| `总耗时` | 2~5 秒 | 主要由模型生成速度决定，回答越长越慢 |
-| `意图判定` | 应显示"未调用模型" | 显示"模型分类，耗时 xxx ms"说明规则没覆盖到，白等一次 |
+| 指标     | 正常         | 太慢说明什么                                      |
+| ------ | ---------- | ------------------------------------------- |
+| `首字延迟` | 0.5~1.5 秒  | 提示词太长（4 段资料 + 20 条历史 ≈ 3000+ token），模型读完才吐字 |
+| `总耗时`  | 2~5 秒      | 主要由模型生成速度决定，回答越长越慢                          |
+| `意图判定` | 应显示"未调用模型" | 显示"模型分类，耗时 xxx ms"说明规则没覆盖到，白等一次             |
 
 ### 一次问答到底调了几次外部接口
 
-| 环节 | 调用 | 优化前 | 优化后 |
-|---|---|---|---|
-| 意图分类 | 对话模型 | **每次都调（1~2 秒）** | 规则命中时 0 次 |
-| 向量检索 | 硅基流动 embedding | 1 次 | 1 次 |
-| 回答生成 | 对话模型（流式） | 1 次 | 1 次 |
-| 自主调工具 | 硅基流动 embedding | — | 模型决定要不要（0~1 次） |
+| 环节    | 调用             | 优化前             | 优化后            |
+| ----- | -------------- | --------------- | -------------- |
+| 意图分类  | 对话模型           | **每次都调（1~2 秒）** | 规则命中时 0 次      |
+| 向量检索  | 硅基流动 embedding | 1 次             | 1 次            |
+| 回答生成  | 对话模型（流式）       | 1 次             | 1 次            |
+| 自主调工具 | 硅基流动 embedding | —               | 模型决定要不要（0~1 次） |
 
-意图分类改成「**规则优先 + 模型兜底**」后，日常技术问题**零额外调用**，
+意图分类改成「**规则优先 + 模型兜底**」后，日常技术问题**零额外调用**，  
 既快了 1~2 秒，也让对话模型的调用次数减半（限速风险随之减半）。
 
 规则表在 `IntentRouter.TECH_HINTS`，命中任意一个技术关键词就直接判 TECH。
+
 
 > ⚠️ 但要注意**判断权的转移**：这套规则是我写的，关键词覆盖不到就会误判
 > （曾把"有什么好吃的美食"判成技术问题）。现在闲聊分支也挂了知识库工具，
@@ -747,6 +754,106 @@ Spring AI 会自动把 `@Tool` 方法转成 JSON Schema 发给模型（Function 
 
 **这一改的意义**：意图路由从"二元 if-else"变成"模型自主选择 N 个工具"，
 出口从 2 个变成 N 个 —— 这就是 **Agent** 和"问答系统"的分水岭。
+
+## ReAct 推理-行动循环
+
+### 一句话解释
+
+**让模型反复调工具，直到它自己觉得资料够了。**
+
+```
+思考(Reasoning) → 行动(Acting) → 观察(Observation) → 思考 → ...
+```
+
+### 为什么手写，不用现成的
+
+Spring AI 2.0 的 `ChatClient` 其实**默认就注册了 `ToolCallingAdvisor`**，它已经在管工具循环了。
+那为什么还要手写？因为框架给的循环**不好控、看不见**：
+
+| | 框架内置的 ToolCallingAdvisor | 本项目手写的循环 |
+|---|---|---|
+| 迭代上限 | 无硬上限，模型卡住会转到超时 | `max-iterations`（默认 5）硬上限，超了强制收尾 |
+| 工具连续失败 | 异常直接抛出，整个回答作废 | 把失败当"工具结果"喂回模型，让它决定换词重试还是直接答 |
+| 中间过程 | 看不到，只能等最终结果 | 每一步都推 `step` 事件，前端显示"正在检索「事务失效」" |
+| 停止条件 | 黑盒 | 三个条件全写在代码里，面试讲得清 |
+
+### 实际效果对比
+
+用户问「SSLSocketFactory 怎么配置」：
+
+```
+旧（RAG）：检索「SSLSocketFactory」→ 命中 4 段概述性内容 → 只能答"请参考官方文档"
+新（ReAct）：
+  第 1 轮  查「SSLSocketFactory」→ 拿到 SSL 概述
+  观察     太笼统，没有具体的 setNeedClientAuth 参数
+  第 2 轮  改查「SSLSocketFactory needClientAuth」→ 拿到准确的 API 说明
+  回答     现在资料够了，给出具体配置
+```
+
+**"判断够不够"的是模型，不是我的 if-else** —— 这是 Agent 的核心。
+
+### 三个停止条件
+
+任意一个满足就结束：
+
+1. **模型不再请求工具** —— 正常结束，主要情况
+2. **达到最大轮数**（默认 5）—— 兜底，防死循环
+3. **工具连续失败 2 次** —— 向量库持续故障时不再空转烧 token
+
+### 工具失败为什么不直接抛
+
+一次问答可能调 3~5 次工具，其中一次因向量库抖动失败是常事。
+立刻抛异常会让整个回答作废，用户看到的是"系统错误"而不是答案。
+
+这里的处理是：**把失败信息当成工具结果喂回模型**，让它自己决定——换个查询词重试，
+还是直接用自己的知识回答并提示用户稍后再试。**把决策权交给模型**，这是 Agent 的思路。
+
+### 两个工具
+
+| 工具 | 作用 |
+|---|---|
+| `searchSpringDocs` | 检索知识库。提示词里明确告诉它"资料太笼统就换个更具体的词再查" |
+| `listKnowledgeBaseTopics` | 列出知识库有哪些主题。模型不知道库里有什么时，先翻目录再检索 |
+
+`listKnowledgeBaseTopics` 值得单独说：它让模型能像人查字典一样
+**先定位章节、再查具体内容**，而不是拿着模糊的词盲猜。
+实现上直接用 `JdbcTemplate` 查 pgvector 表——因为 `VectorStore` 接口
+只有"按相似度检索"，没有"列出全部"的方法。
+
+### 进度事件（step）
+
+ReAct 特有的体验问题：模型**先调工具、看到结果，才开始写正文**，中间有几秒停顿。
+没有进度提示的话，用户看到的就是「转圈但一个字都不出」，以为卡死了。
+
+```
+无 step 事件：[提问] ………… 5秒静默 ………… [突然一大段刷出来]
+有 step 事件：[提问] 「正在检索「SSLSocketFactory」」→「正在换个关键词再查」→ [正文]
+```
+
+对应 SSE 事件：
+
+| 事件 | 时机 | 前端处理 |
+|---|---|---|
+| `step` | 每次工具调用，0~5 次 | 显示灰色小字提示，**不当正文** |
+| `sources` | 检索完成后 | 渲染引用来源卡片 |
+| `token` | 最后一次性推送 | 渲染正文（ReAct 无逐字打字机） |
+
+### 已知取舍
+
+ReAct 的代价是**正文没有打字机效果**——循环本来就是"先想清楚再答"，
+强行逐字反而更怪。换来的是"能看到它在查什么"，这比打字机更有价值。
+
+另一个取舍：ReAct 循环是同步阻塞的，所以用线程池执行，
+不能直接占用 SSE 请求线程，否则通道会一直空着。
+
+配置项（`application.yaml`）：
+
+```yaml
+doc-agent:
+  react:
+    max-iterations: 5               # 最多几轮
+    max-consecutive-failures: 2     # 工具连续失败几次就放弃
+```
 
 ## 已知取舍
 

@@ -99,6 +99,19 @@ doc-agent:
     # agent_max —— 会顺带抓取网页正文（web_extractor），信息更全，
     #              但百炼【明确不支持非流式输出】，只能在流式接口里用
     strategy: standard
+  react:
+    # ===== ReAct 推理-行动循环（技术问题分支）=====
+    # 模型会反复调工具直到资料够用，这两个参数是循环的护栏。
+    #
+    # max-iterations —— 最多迭代几轮。
+    #   3~5 轮足够解决大部分问题（查一次不中、换个词再查通常就中了）。
+    #   调太大有两个代价：token 烧得多、回答变慢（每轮都要调一次模型）。
+    #   注意：Spring AI 内置的 ToolCallingAdvisor 没有这个上限，模型卡住会转到超时。
+    max-iterations: 5
+    # max-consecutive-failures —— 工具连续失败几次就放弃循环。
+    #   单次失败（向量库抖动）不放弃，会把失败当工具结果喂回模型让它自己决定换词重试；
+    #   连续失败说明数据库真的有问题，再查下去只是空转烧 token。
+    max-consecutive-failures: 2
   vector-store:
     # 用哪套向量库：
     #   pgvector —— 存进 PostgreSQL。天然持久化、可被多个实例共享、能建索引加速检索（当前）

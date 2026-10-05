@@ -62,9 +62,11 @@ async function copy() {
 
       <!-- 助手消息：Markdown 渲染 -->
       <template v-else>
-        <div v-if="message.pending" class="pending">
+        <div v-if="message.pending || message.step" class="pending">
           <span class="thinking"><i></i><i></i><i></i></span>
-          <span class="pending-text">正在判断意图并检索文档…</span>
+          <!-- ReAct 循环会不断送来新的步骤提示，直接显示最新的那条；
+               还没收到步骤时（检索还没开始）用通用文案兜底 -->
+          <span class="pending-text">{{ message.step || '正在判断意图并检索文档…' }}</span>
         </div>
 
         <template v-else>

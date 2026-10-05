@@ -9,6 +9,7 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -67,6 +68,20 @@ public class DocSearchTool {
     private final VectorStore vectorStore;
 
     /**
+     * 直接操作 pgvector 表用的 JDBC 模板
+     *
+     * <p>为什么需要它：{@link VectorStore} 接口<b>没有"列出全部文档"的方法</b>
+     * （它只提供"按相似度检索"）。而 {@code listKnowledgeBaseTopics} 需要的是
+     * 全量标题列表，用相似度检索去凑是<b>不准确的</b>（会把不相关的排前面、
+     * 受topK 限制截断）。所以这里拿原生 JdbcTemplate 直查表，
+     * 走的是 Spring AI 建的那张表，schema 变了也不用改这里的 SQL。
+     */
+    private final JdbcTemplate jdbcTemplate;
+
+    /** 表名，来自 application.yaml 的 doc-agent.vector-store.table */
+    private final String tableName;
+
+    /**
      * 检索结果暂存区：conversationId → 本轮检索到的引用来源
      *
      * <p>为什么需要它：工具方法返回给模型的是拼好的文本，前端却需要结构化的
@@ -75,8 +90,13 @@ public class DocSearchTool {
      */
     private final Map<String, List<SourceRef>> pendingSources = new ConcurrentHashMap<>();
 
-    public DocSearchTool(VectorStore vectorStore) {
+    public DocSearchTool(VectorStore vectorStore,
+                         JdbcTemplate jdbcTemplate,
+                         @org.springframework.beans.factory.annotation.Value(
+                                 "${doc-agent.vector-store.table:vector_store}") String tableName) {
         this.vectorStore = vectorStore;
+        this.jdbcTemplate = jdbcTemplate;
+        this.tableName = tableName;
     }
 
     /**
@@ -125,7 +145,11 @@ public class DocSearchTool {
             sb.append("\n【").append(title).append("】（来源文件：").append(file).append("）\n")
                     .append(doc.getText()).append("\n——————\n");
         }
-        sb.append("【检索结果结束】请严格基于以上资料回答，并在回答末尾用「参考：[标题](来源文件)」列出你用到的资料。");
+        sb.append("""
+                【检索结果结束】
+                判断标准：如果这些资料已经能准确回答问题，就直接回答；
+                如果资料过于笼统、没有具体的类名/参数名/配置项，
+                请换一个更具体的关键词再调用一次本工具（例如补充具体技术名词），最多再试 2 次。""");
 
         // 存下结构化引用，等这轮结束时推给前端渲染卡片
         if (cid != null) {
@@ -134,7 +158,88 @@ public class DocSearchTool {
         return sb.toString();
     }
 
-    /** 取出并清除某会话本轮检索到的引用来源（一次性消费） */
+    /**
+     * 查知识库里有哪些资料
+     *
+     * <h3>为什么需要这个工具</h3>
+     * ReAct 循环里模型会自己决定调什么工具。但如果它不知道"库里到底有什么"，
+     * 只能盲猜关键词去检索，命中率会很低。加一个"先看看目录"的工具，
+     * 模型就能像人查字典一样：<b>先翻目录定位章节，再查具体内容</b>。
+     *
+     * <p>典型场景：用户问"缓存怎么配"，模型可能先用模糊词查一次发现不具体，
+     * 然后调本工具看到有「Caching」相关文档，再用准确的词查第二次 —— 这就是
+     * ReAct 的"思考 → 观察 → 再思考"真正在起作用。
+     */
+    @Tool(description = """
+            查看知识库里收录了哪些主题的文档，用来决定接下来该用什么关键词检索。
+            适用场景：不确定知识库有哪些内容、或者第一次检索结果过于笼统需要换个方向时。
+            典型用法：先调用本工具看看有哪些主题，再用更准确的关键词调用 searchSpringDocs。""")
+    public String listKnowledgeBaseTopics(
+            @ToolParam(description = "可选的过滤关键词，只想看某个方向时填，如「缓存」「安全」，留空则列出全部")
+            String filter,
+            ToolContext toolContext) {
+
+        String cid = extractConversationId(toolContext);
+        log.info("模型查看知识库目录：cid={} filter={}", cid, filter);
+
+        // 一次性列出所有文档标题：知识库规模不大（几百篇），全量列出来更有用，
+        // 模型的检索词往往就藏在标题里
+        try {
+            List<String> raw = listAllTitles();
+            if (raw == null || raw.isEmpty()) {
+                return "【知识库是空的】请提示用户先在界面点「加载文档」建立索引。";
+            }
+
+            // 末尾那条是片段总数（拼在同一个List 里省一个查询方法）
+            int chunkCount = 0;
+            for (String t : raw) {
+                if (t.startsWith("__TOTAL__")) {
+                    chunkCount = Integer.parseInt(t.substring(9));
+                }
+            }
+
+            // 用标题去重：一个主题只列一次，避免几百条刷屏
+            java.util.LinkedHashSet<String> titles = new java.util.LinkedHashSet<>();
+            for (String t : raw) {
+                if (t.startsWith("__TOTAL__")) {
+                    continue;
+                }
+                if (filter == null || filter.isBlank() || t.toLowerCase().contains(filter.toLowerCase())) {
+                    titles.add(t);
+                }
+            }
+
+            if (titles.isEmpty()) {
+                return "【没有匹配「" + filter + "」的主题】请换个过滤词，或留空直接调用以查看全部主题。";
+            }
+
+            StringBuilder sb = new StringBuilder("【知识库共收录 ").append(titles.size())
+                    .append(" 个主题，片段总数 ").append(chunkCount).append("】：\n");
+            int i = 0;
+            for (String t : titles) {
+                sb.append(++i).append(". ").append(t).append("\n");
+            }
+            sb.append("""
+                    
+                    请从上面挑最相关的主题，用它的名称或其中的技术名词作为关键词，调用 searchSpringDocs 检索细节。
+                    如果上面没有合适的主题，说明知识库确实不覆盖这部分内容。""");
+            return sb.toString();
+
+        } catch (Exception e) {
+            log.warn("读取知识库目录失败：{}", e.getMessage());
+            return "【知识库目录读取失败】" + e.getMessage() + "。请直接基于你自己的知识回答。";
+        }
+    }
+
+    /**
+     * 取出并合并某会话累积到的引用来源
+     *
+     * <h3>为什么要「累积」而不只是「一次性消费」</h3>
+     * ReAct 循环里模型可能查好几次知识库，每轮都会调{@code takeSources}。
+     * 早期版本用 {@code remove} 一次取空，导致第二次查到的资料在前端显示不出来。
+     * 现在改成：每轮取到的都<b>合并</b>进一个列表，按「文件+片段」去重，
+     * 等循环真正结束时再一次性交给上层推给前端。
+     */
     public List<SourceRef> takeSources(String conversationId) {
         if (conversationId == null) {
             return List.of();
@@ -143,6 +248,27 @@ public class DocSearchTool {
         // 因为数据已经被删掉了（这个 bug 在开发时真的犯过一次）。
         List<SourceRef> removed = pendingSources.remove(conversationId);
         return removed == null ? List.of() : removed;
+    }
+
+    /** 清理某会话的暂存（会话被删除时调用，避免内存泄漏） */
+    public void clearSources(String conversationId) {
+        if (conversationId != null) {
+            pendingSources.remove(conversationId);
+        }
+    }
+
+    /** 从 pgvector 表里读出全部文档标题（listKnowledgeBaseTopics 用） */
+    private List<String> listAllTitles() {
+        // Spring AI 建的表里，metadata 是 jsonb，文档标题存在 metadata->>'title'
+        // 只 select 这一列而不是 embedding（1024 个浮点数），省一大半带宽
+        List<String> titles = jdbcTemplate.queryForList(
+                "SELECT DISTINCT metadata->>'title' AS t FROM " + tableName
+                        + " WHERE metadata->>'title' IS NOT NULL ORDER BY t",
+                String.class);
+        Integer total = jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM " + tableName, Integer.class);
+        titles.add("__TOTAL__" + (total == null ? 0 : total));
+        return titles;
     }
 
     private String extractConversationId(ToolContext toolContext) {

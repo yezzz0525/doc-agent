@@ -164,6 +164,17 @@ public class ApiController {
                 emit("sources", sources);
             }
 
+            /**
+             * ReAct 循环的进度提示。
+             *
+             * <p>模型要先调工具才写正文，中间有停顿。发这个事件让前端显示
+             * "正在检索…"，用户就不会以为卡死了。
+             */
+            @Override
+            public void onStep(int iteration, String summary) {
+                emit("step", java.util.Map.of("iteration", iteration, "summary", summary));
+            }
+
             @Override
             public void onError(String message) {
                 emit("error", message == null ? "未知错误" : message);

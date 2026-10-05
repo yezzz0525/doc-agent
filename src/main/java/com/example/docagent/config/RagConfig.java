@@ -62,7 +62,7 @@ public class RagConfig {
     /**
      * 给对话模型套上「单并发守卫 + token 统计」
      *
-     * <b>为什么必须加</b>：智谱免费档<b>只允许 1 个并发请求</b>（服务商侧限制）。
+     * <b>为什么必须加</b>：部分免费档服务商（如智谱 GLM）<b>只允许 1 个并发请求</b>，这是服务商侧限制。
      * 一次问答要调它一到两次（意图分类 + 回答生成），上一条流式回答没结束就发新问题，
      * 必然撞 429。用信号量在客户端串行化，从源头避免被拒。
      *
@@ -96,7 +96,7 @@ public class RagConfig {
      * Spring 会先创建原始 bean、应用本处理器、拿到包装后的实例再注入。
      *
      * 只包 EmbeddingModel，不包 ChatModel ——
-     * 智谱 GLM 是免费不限量的，真限速的概率极低，而且流式回答被重试会导致重复输出。
+     * 免费档模型真限速的概率极低，而且流式回答被重试会导致重复输出。
      */
     @Bean
     public static BeanPostProcessor embeddingRetryPostProcessor(

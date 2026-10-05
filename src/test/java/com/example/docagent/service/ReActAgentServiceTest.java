@@ -78,7 +78,7 @@ class ReActAgentServiceTest {
     @Test
     void 两轮后应该收敛出最终答案() {
         ScriptedChatModel fakeModel = new ScriptedChatModel();
-        ReActAgentService agent = new ReActAgentService(fakeModel, 5, 2);
+        ReActAgentService agent = new ReActAgentService(fakeModel, "qwen-flash", 5, 2);
 
         ReActAgentService.ReactResult result = agent.run(
                 "你是 Spring 助手",
@@ -103,7 +103,7 @@ class ReActAgentServiceTest {
     @Test
     void 传给模型的options必须是OpenAiChatOptions() {
         ScriptedChatModel fakeModel = new ScriptedChatModel();
-        ReActAgentService agent = new ReActAgentService(fakeModel, 5, 2);
+        ReActAgentService agent = new ReActAgentService(fakeModel, "qwen-flash", 5, 2);
 
         agent.run("你是 Spring 助手", "问题", new Object[]{new NoopTool()}, Map.of(), null);
 
@@ -128,7 +128,7 @@ class ReActAgentServiceTest {
     @Test
     void 工具结果应该被喂回给模型且消息不重复() {
         ScriptedChatModel fakeModel = new ScriptedChatModel();
-        ReActAgentService agent = new ReActAgentService(fakeModel, 5, 2);
+        ReActAgentService agent = new ReActAgentService(fakeModel, "qwen-flash", 5, 2);
 
         agent.run("你是 Spring 助手", "事务失效", new Object[]{new NoopTool()}, Map.of(), null);
 
@@ -175,6 +175,70 @@ class ReActAgentServiceTest {
         return "";
     }
 
+    /**
+     * 传给模型的 options 必须带上模型名（守住gpt-5-mini 那个404）
+     *
+     * <p>这个测试对应一个真实事故：手搓 {@code OpenAiChatOptions} 时漏了
+     * {@code .model()}，而它的构造函数是
+     * {@code this.model = model != null ? model : DEFAULT_CHAT_MODEL}，
+     * {@code DEFAULT_CHAT_MODEL} 恰恰是 OpenAI 的 {@code gpt-5-mini}——
+     * 于是明明配的百炼 qwen-flash，实际发出去的 model 却是 gpt-5-mini，百炼直接 404。
+     *
+     * <p><b>为什么这个断言单靠运行期才发现不了</b>：假 ChatModel 根本不读 model 名，
+     * 所以单测全绿、真调模型才炸。有这个断言后，漏了立刻在这里挂。
+     */
+    @Test
+    void options必须带模型名不能退回默认的gpt5mini() {
+        ScriptedChatModel fakeModel = new ScriptedChatModel();
+        ReActAgentService agent = new ReActAgentService(fakeModel, "qwen-flash", 5, 2);
+
+        agent.run("你是 Spring 助手", "问题", new Object[]{new NoopTool()}, Map.of(), null);
+
+        assertThat(fakeModel.receivedPrompts).isNotEmpty();
+        for (Prompt p : fakeModel.receivedPrompts) {
+            String model = ((org.springframework.ai.openai.OpenAiChatOptions) p.getOptions()).getModel();
+            assertThat(model)
+                    .as("漏设model 会退回框架默认的 gpt-5-mini，百炼不认这个模型名 → 404")
+                    .isEqualTo("qwen-flash");
+        }
+    }
+
+    /**
+     * 撞上轮数上限时走的是 forceAnswer 这条兜底路径，
+     * 它<b>也必须</b>带模型名（用裸 new Prompt(messages) 会退回默认值）
+     */
+    @Test
+    void 强制收尾时也不能丢模型名() {
+        ChatModel stubborn = new ChatModel() {
+            @Override
+            public ChatResponse call(Prompt prompt) {
+                String model = prompt.getOptions() == null ? null
+                        : ((org.springframework.ai.openai.OpenAiChatOptions) prompt.getOptions()).getModel();
+                if (!"qwen-flash".equals(model)) {
+                    throw new IllegalStateException("模型名丢了：" + model);
+                }
+                AssistantMessage.ToolCall toolCall = new AssistantMessage.ToolCall(
+                        "call-x", "function", "searchSpringDocs", "{\"query\":\"反复查\"}");
+                return new ChatResponse(List.of(new Generation(AssistantMessage.builder()
+                        .content("继续查")
+                        .toolCalls(List.of(toolCall))
+                        .build())));
+            }
+
+            @Override
+            public org.springframework.ai.chat.prompt.ChatOptions getDefaultOptions() {
+                return org.springframework.ai.chat.prompt.ChatOptions.builder().build();
+            }
+        };
+
+        ReActAgentService agent = new ReActAgentService(stubborn, "qwen-flash", 3, 2);
+        ReActAgentService.ReactResult result =
+                agent.run("系统提示", "问题", new Object[]{new NoopTool()}, Map.of(), null);
+
+        // 每一次调用（含最后收尾那次）都检查过了，没抛就说明模型名都在
+        assertThat(result.truncated()).isTrue();
+    }
+
     /** 模型一直要工具时，应该撞上轮数上限并强制收尾，而不是无限循环 */
     @Test
     void 撞上轮数上限应该强制收尾() {
@@ -196,7 +260,7 @@ class ReActAgentServiceTest {
             }
         };
 
-        ReActAgentService agent = new ReActAgentService(stubborn, 3, 2);
+        ReActAgentService agent = new ReActAgentService(stubborn, "qwen-flash", 3, 2);
         ReActAgentService.ReactResult result = agent.run(
                 "系统提示", "问题", new Object[]{new NoopTool()}, Map.of(), null);
 
@@ -208,7 +272,7 @@ class ReActAgentServiceTest {
     @Test
     void 进度回调应该被调用() {
         ScriptedChatModel fakeModel = new ScriptedChatModel();
-        ReActAgentService agent = new ReActAgentService(fakeModel, 5, 2);
+        ReActAgentService agent = new ReActAgentService(fakeModel, "qwen-flash", 5, 2);
 
         var steps = new java.util.ArrayList<String>();
         agent.run("系统提示", "问题", new Object[]{new NoopTool()}, Map.of(),

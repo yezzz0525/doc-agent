@@ -77,19 +77,41 @@ public class ReActAgentService {
 
     private final ChatModel chatModel;
 
+    /**
+     * 要用的模型名，从配置读（{@code spring.ai.openai.chat.model}）
+     *
+     * <h3>⚠️ 这个字段绝对不能漏（踩过，运行期才炸）</h3>
+     * 只要你<b>手搓</b> {@code OpenAiChatOptions}，就<b>必须显式 set 模型名</b>。
+     * 因为它的构造函数是：
+     * <pre>
+     * this.model = model != null ? model : DEFAULT_CHAT_MODEL;
+     * </pre>
+     * 而 {@code DEFAULT_CHAT_MODEL = "gpt-5-mini"}（Spring AI 2.0 硬编码的 OpenAI 默认值）。
+     * <p>
+     * 所以漏set 的后果是：明明配的是百炼 qwen-flash，实际发出去的 model 却是
+     * {@code gpt-5-mini} → 百炼不认识 → 404 model_not_found。
+     * <p>
+     * <b>为什么平时不踩</b>：走 {@code ChatClient} 的普通调用，框架会用
+     * 自动配置里的默认 options 补上模型名；只有<b>手搓 options</b> 时才会暴露。
+     */
+    private final String chatModelName;
+
     private final ToolCallingManager toolCallingManager =
             DefaultToolCallingManager.builder().build();
 
     public ReActAgentService(ChatModel chatModel,
                              @org.springframework.beans.factory.annotation.Value(
+                                     "${spring.ai.openai.chat.model:qwen-flash}") String chatModelName,
+                             @org.springframework.beans.factory.annotation.Value(
                                      "${doc-agent.react.max-iterations:5}") int maxIterations,
                              @org.springframework.beans.factory.annotation.Value(
                                      "${doc-agent.react.max-consecutive-failures:2}") int maxConsecutiveFailures) {
         this.chatModel = chatModel;
+        this.chatModelName = chatModelName;
         this.maxIterations = Math.max(1, maxIterations);
         this.maxConsecutiveFailures = Math.max(1, maxConsecutiveFailures);
-        log.info("ReAct 循环已就绪：最多 {} 轮，工具连续失败 {} 次即放弃",
-                this.maxIterations, this.maxConsecutiveFailures);
+        log.info("ReAct 循环已就绪：模型 {}，最多 {} 轮，工具连续失败 {} 次即放弃",
+                this.chatModelName, this.maxIterations, this.maxConsecutiveFailures);
     }
 
     /** 循环过程中每一步的回调，让上层能把进度推给前端 */
@@ -144,25 +166,7 @@ public class ReActAgentService {
             List<Message> snapshot = new ArrayList<>(messages);
             Prompt prompt = Prompt.builder()
                     .messages(snapshot)
-                    // ⚠️ 这里必须用 OpenAiChatOptions，不能用 ToolCallingChatOptions.builder()
-                    //
-                    // 踩过的坑：一开始写的是 ToolCallingChatOptions.builder()，编译通过、
-                    // 单元测试也过，但一跑就抛
-                    //   ClassCastException: DefaultToolCallingChatOptions cannot be cast to OpenAiChatOptions
-                    //
-                    // 原因：ToolCallingChatOptions.builder() 造出来的是基类
-                    // DefaultToolCallingChatOptions，而 OpenAiChatModel.createRequest() 里做的是
-                    //   (OpenAiChatOptions) prompt.getOptions()
-                    // 直接强转，基类实例当然转不过去。
-                    //
-                    // 关键点：OpenAiChatOptions.Builder **继承自**
-                    // DefaultToolCallingChatOptions.Builder（不是反过来），所以它本来就支持
-                    // .toolCallbacks() / .toolContext()，还额外支持 .extraBody() 给百炼传
-                    // enable_search。**用子类那个，两边需求一次满足。**
-                    .chatOptions(OpenAiChatOptions.builder()
-                            .toolCallbacks(ToolCallbacks.from(tools))
-                            .toolContext(toolContext == null ? Map.of() : toolContext)
-                            .build())
+                    .chatOptions(optionsFor(toolContext, tools))
                     .build();
 
             ChatResponse response = chatModel.call(prompt);
@@ -237,9 +241,7 @@ public class ReActAgentService {
                 if (consecutiveFailures >= maxConsecutiveFailures) {
                     // 放弃循环，把已有资料交给模型做最后一次总结
                     log.warn("ReAct 工具连续失败 {} 次，放弃循环并降级为单轮回答", maxConsecutiveFailures);
-                    String partial = chatModel.call(new Prompt(
-                            messages.toArray(new Message[0]))).getResult().getOutput().getText();
-                    return new ReactResult(partial, toolCallCount, true, i);
+                    return new ReactResult(forceAnswer(messages), toolCallCount, true, i);
                 }
 
                 // 把失败当成"工具结果"喂回模型，让它自己决定换个词还是直接答。
@@ -252,9 +254,57 @@ public class ReActAgentService {
         // 兜底。再让模型总结一次现有资料，别让用户等来一个空回答
         truncated = true;
         log.warn("ReAct 达到最大轮数 {}，强制收尾", maxIterations);
-        String finalAnswer = chatModel.call(new Prompt(messages.toArray(new Message[0])))
-                .getResult().getOutput().getText();
+        String finalAnswer = forceAnswer(messages);
         return new ReactResult(finalAnswer, toolCallCount, truncated, maxIterations);
+    }
+
+    /**
+     * 兜底收尾：让模型基于已有资料给个总结
+     *
+     * <p>注意这里<b>必须</b>走 {@link #optionsFor(String)} 造 options，不能用裸
+     * {@code new Prompt(messages)}——那样模型名会退回框架默认的 gpt-5-mini，
+     * 兜底路径也就跟着404 了（而且只在撞上轮数上限时才触发，更难复现）。
+     */
+    private String forceAnswer(List<Message> messages) {
+        return chatModel.call(Prompt.builder()
+                        .messages(new ArrayList<>(messages))
+                        .chatOptions(optionsFor(null, null))
+                        .build())
+                .getResult().getOutput().getText();
+    }
+
+    /**
+     * 造这次调用要用的 options —— <b>模型名、工具、上下文三样都在这儿设</b>
+     *
+     * <h3>为什么抽出来</h3>
+     * 手搓 options 一共踩过三个坑，其中两个是「漏设某个字段」：
+     * <ol>
+     *   <li>用错builder 类型 → ClassCastException</li>
+     *   <li>漏 {@code .model()} → 退回默认的 gpt-5-mini → 百炼 404</li>
+     * </ol>
+     * 散在代码里很容易再漏一次，<b>集中到这一个方法，漏了一眼就能看出来</b>。
+     *
+     * @param toolContext 传给工具的上下文，传 null 表示这轮不挂工具（收尾总结用）
+     * @param tools       工具数组，可以为 null
+     */
+    private org.springframework.ai.chat.prompt.ChatOptions optionsFor(Map<String, Object> toolContext,
+                                                                     Object[] tools) {
+        var builder = OpenAiChatOptions.builder()
+                // ⚠️⚠️ 最容易漏的一个：OpenAiChatOptions 构造函数是
+                //   this.model = model != null ? model : DEFAULT_CHAT_MODEL;
+                // 而 DEFAULT_CHAT_MODEL = "gpt-5-mini"（框架为 OpenAI 硬编码的默认值）。
+                // 漏了它 → 明明配了百炼 qwen-flash，实际发出去的 model 却是 gpt-5-mini
+                //   → 404 model_not_found。
+                //   走 ChatClient 的普通调用不会踩（框架用自动配置的 options 补了），
+                //   只有手搓 options 才暴露。
+                .model(chatModelName);
+
+        // 收尾总结那轮不挂工具，避免模型又要工具、又拿不到结果
+        if (tools != null && tools.length > 0) {
+            builder.toolCallbacks(ToolCallbacks.from(tools))
+                   .toolContext(toolContext == null ? Map.of() : toolContext);
+        }
+        return builder.build();
     }
 
     /**

@@ -9,6 +9,7 @@ import com.example.docagent.dto.LoadResult;
 import com.example.docagent.dto.RenameRequest;
 import com.example.docagent.dto.TokenUsage;
 import com.example.docagent.service.ConversationService;
+import com.example.docagent.service.DocSearchTool;
 import com.example.docagent.service.DocumentService;
 import com.example.docagent.service.RagChatService;
 import com.example.docagent.service.TokenUsageService;
@@ -73,17 +74,20 @@ public class ApiController {
     private final ConversationService conversationService;
     private final TokenUsageService tokenUsageService;
     private final ChatMemory chatMemory;
+    private final DocSearchTool docSearchTool;
 
     public ApiController(DocumentService documentService,
                          RagChatService ragChatService,
                          ConversationService conversationService,
                          TokenUsageService tokenUsageService,
-                         ChatMemory chatMemory) {
+                         ChatMemory chatMemory,
+                         DocSearchTool docSearchTool) {
         this.documentService = documentService;
         this.ragChatService = ragChatService;
         this.conversationService = conversationService;
         this.tokenUsageService = tokenUsageService;
         this.chatMemory = chatMemory;
+        this.docSearchTool = docSearchTool;
     }
 
     // ==================== 知识库 ====================
@@ -110,6 +114,32 @@ public class ApiController {
     public LoadResult load(@RequestParam(defaultValue = "tools/spring-docs") String dir,
                            @RequestParam(required = false) Integer maxFiles) throws IOException {
         return documentService.loadDocs(dir, maxFiles == null ? Integer.MAX_VALUE : maxFiles);
+    }
+
+    // ==================== 评测 ====================
+
+    /**
+     * 只检索、不生成 —— 给评测脚本用的"尺子"接口
+     *
+     * <h3>为什么必须有这个接口</h3>
+     * 评测要分两层测：
+     * <pre>
+     *   检索层：给的资料对不对？   ← 这一层不该调模型，否则又慢又花钱
+     *   生成层：基于对的资料答得好不好？
+     * </pre>
+     * 如果只有一个 /api/chat，每次评测都得跑完整条ReAct 链路：
+     * 25 道题 × 十几秒 = 好几分钟，而且每跑一次都烧 token。
+     * 有了这个接口，检索层评测<b>零成本、零延迟</b>，可以随手跑。
+     *
+     * <h3>用法</h3>
+     * <pre>
+     * GET /api/eval/retrieve?query=事务失效&amp;topK=4
+     * </pre>
+     */
+    @GetMapping("/eval/retrieve")
+    public DocSearchTool.EvalRetrieveResult evalRetrieve(@RequestParam String query,
+                                                         @RequestParam(defaultValue = "4") int topK) {
+        return docSearchTool.evalRetrieve(query, topK);
     }
 
     // ==================== 问答 ====================

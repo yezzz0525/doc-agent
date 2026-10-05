@@ -156,6 +156,12 @@ public class ReActAgentService {
         int consecutiveFailures = 0;
         boolean truncated = false;
 
+        // ===== Trace：记录每一轮发生了什么 =====
+        // 用途：事后能回答"这次为什么慢 / 为什么答错"，
+        // 而不是只能看到一个最终答案干瞪眼。这也是评测集能定位问题的前提。
+        List<TraceStep> trace = new ArrayList<>();
+        long promptCharsBefore = systemPrompt.length() + userQuestion.length();
+
         for (int i = 1; i <= maxIterations; i++) {
             // ===== 第 1 步：思考（调模型，让它决定要不要调工具）=====
             // ⚠️ 第二个坑：Prompt 构造函数是 `this.messages = messages;`——零拷贝，
@@ -171,15 +177,18 @@ public class ReActAgentService {
 
             ChatResponse response = chatModel.call(prompt);
             AssistantMessage assistant = (AssistantMessage) response.getResult().getOutput();
+            long callMs = (System.nanoTime() - t0) / 1_000_000;
 
             // ===== 停止条件 1：模型不再请求工具 =====
             // 这是正常结束——它觉得手上的资料够回答了
             if (!assistant.hasToolCalls()) {
                 String answer = assistant.getText();
                 long cost = (System.nanoTime() - t0) / 1_000_000;
-                log.info("ReAct 循环结束：第 {} 轮模型决定直接回答，共调工具 {} 次，耗时 {} ms",
-                        i, toolCallCount, cost);
-                return new ReactResult(answer, toolCallCount, false, i);
+                trace.add(new TraceStep(i, "answer", "-", callMs, contextCharsOf(messages), 0));
+                log.info("ReAct 循环结束：第 {} 轮模型决定直接回答，共调工具 {} 次，耗时 {} ms，"
+                                + "上下文累计约 {} 字（初始 {} 字）",
+                        i, toolCallCount, cost, contextCharsOf(messages), promptCharsBefore);
+                return new ReactResult(answer, toolCallCount, false, i, cost, trace);
             }
 
             // ===== 第 2 步：行动（执行模型要调的工具）=====
@@ -192,6 +201,8 @@ public class ReActAgentService {
             progress.onToolCall(i, String.join("+", names), describe(calls));
 
             try {
+                // 这行在 lambda 里用，所以先存成final 局部变量
+                final long callMsFinal = callMs;
                 // 这一步内部会：找到对应的 @Tool 方法 → 执行 → 把结果包成 ToolResponseMessage
                 ToolExecutionResult result =
                         toolCallingManager.executeToolCalls(prompt, response);
@@ -232,16 +243,41 @@ public class ReActAgentService {
                 consecutiveFailures = 0;
                 toolCallCount += calls.size();
 
+                // 记trace：这一轮查了什么词、拿回多少字的内容。
+                // 检索回来的字数就是下一轮的 token 成本，也是"上下文在膨胀"的证据。
+                // ⚠️ 用普通循环而不是 stream().forEach()：
+                //    在 lambda 里累加外层的 long 会编译失败（ Effectively Final 被破坏），
+                //    顺带 stream 对这种"要累加"的场景本来就不如for 直观。
+                int retrievedChars = 0;
+                if (history != null) {
+                    for (Message m : history) {
+                        if (m instanceof ToolResponseMessage trm) {
+                            for (ToolResponseMessage.ToolResponse r : trm.getResponses()) {
+                                retrievedChars += r.responseData().length();
+                            }
+                        }
+                    }
+                }
+                int contextNow = contextCharsOf(messages);
+                trace.add(new TraceStep(i, String.join("+", names),
+                        extractQuery(calls.get(0).arguments()), callMsFinal, contextNow, retrievedChars));
+                // 每轮都打一行，看起来像这样：
+                // [TRACE] q=starter it=2 tools=searchSpringDocs callMs=2100 ctx=3410 fetched=1580
+                log.info("[TRACE] q={} it={} tools={} callMs={} ctx={} fetched={}",
+                        abbreviate(userQuestion), i, names, callMsFinal, contextNow, retrievedChars);
+
             } catch (Exception e) {
                 // ===== 停止条件 3：工具连续失败太多次 =====
                 consecutiveFailures++;
                 log.warn("ReAct 第 {} 轮工具执行失败（连续第 {} 次）：{}",
                         i, consecutiveFailures, e.getMessage());
+                trace.add(new TraceStep(i, "TOOL_ERROR", e.getMessage(), callMs, 0, 0));
 
                 if (consecutiveFailures >= maxConsecutiveFailures) {
                     // 放弃循环，把已有资料交给模型做最后一次总结
                     log.warn("ReAct 工具连续失败 {} 次，放弃循环并降级为单轮回答", maxConsecutiveFailures);
-                    return new ReactResult(forceAnswer(messages), toolCallCount, true, i);
+                    return new ReactResult(forceAnswer(messages), toolCallCount, true, i,
+                            (System.nanoTime() - t0) / 1_000_000, trace);
                 }
 
                 // 把失败当成"工具结果"喂回模型，让它自己决定换个词还是直接答。
@@ -255,7 +291,41 @@ public class ReActAgentService {
         truncated = true;
         log.warn("ReAct 达到最大轮数 {}，强制收尾", maxIterations);
         String finalAnswer = forceAnswer(messages);
-        return new ReactResult(finalAnswer, toolCallCount, truncated, maxIterations);
+        return new ReactResult(finalAnswer, toolCallCount, truncated, maxIterations,
+                (System.nanoTime() - t0) / 1_000_000, trace);
+    }
+
+    /** 日志里缩短问题文本，否则每行都刷一长串 */
+    private static String abbreviate(String s) {
+        if (s == null) {
+            return "-";
+        }
+        return s.length() <= 20 ? s : s.substring(0, 20) + "…";
+    }
+
+    /**
+     * 算出上下文里跟"喂给模型"相关的字符数 —— token 成本的直接指标
+     *
+     * <p><b>只算工具响应和助手自己的话</b>，不算 System/User 提示。
+     * 因为前者才是<b>每轮都在累加</b>的部分，是成本失控的源头；
+     * 后者每轮都一样，算进去只会把数字冲淡。
+     *
+     * <p>⚠️ 这个方法当初写错过一次：收尾分支只累加了 AssistantMessage 的文本，
+     * 漏掉 ToolResponseMessage，导致 trace 里出现「最后一轮上下文比上一轮还小」
+     * 的荒谬数据。**同一份计算只能有一个实现**，两处各写一遍必然对不上。
+     */
+    private static int contextCharsOf(List<Message> messages) {
+        int sum = 0;
+        for (Message m : messages) {
+            if (m instanceof ToolResponseMessage trm) {
+                for (ToolResponseMessage.ToolResponse r : trm.getResponses()) {
+                    sum += r.responseData().length();
+                }
+            } else if (m instanceof AssistantMessage am && am.getText() != null) {
+                sum += am.getText().length();
+            }
+        }
+        return sum;
     }
 
     /**
@@ -360,20 +430,42 @@ public class ReActAgentService {
     }
 
     /**
+     * 一次工具调用的 trace 记录
+     *
+     * <p><b>为什么要留这些字段</b>：出了问题光看最终答案是没用的，
+     * 得知道「第几轮查了什么词、那一轮慢在哪、上下文涨到多大」。
+     * 这些数字也是优化成本的依据——上下文是每轮累加的，
+     * 知道它涨多快，才知道该不该限制轮数。
+     *
+     * @param iteration第几轮
+     * @param tools     调了哪些工具（失败时是 TOOL_ERROR）
+     * @param query     检索词（从工具参数里抽出来的）
+     * @param callMs    这一轮调模型到拿到响应花了多久
+     * @param contextChars  这一轮结束时上下文累计字符数（token 成本的直接指标）
+     * @param fetchedChars  这一轮工具拿回多少字符
+     */
+    public record TraceStep(int iteration, String tools, String query,
+                            long callMs, int contextChars, int fetchedChars) {}
+
+    /**
      * ReAct 循环的结果
      *
      * @param answer最终答案（模型的最后一段输出）
      * @param toolCallCount 累计调了几次工具（用于日志和可观测）
      * @param truncated    是否因为撞上轮数上限/工具连续失败而被迫收尾
      * @param iterations   实际跑了几轮
+     * @param totalMs      整个循环耗时
+     * @param trace        每轮的详细轨迹，用于事后定位问题
      */
-    public record ReactResult(String answer, int toolCallCount, boolean truncated, int iterations) {
+    public record ReactResult(String answer, int toolCallCount, boolean truncated, int iterations,
+                              long totalMs, List<TraceStep> trace) {
 
         /** 归档成字符串，方便日志里一眼看清这次跑得顺不顺 */
         @Override
         public String toString() {
-            return String.format("iterations=%d tools=%d truncated=%s answerLen=%d",
-                    iterations, toolCallCount, truncated, answer == null ? 0 : answer.length());
+            return String.format("iterations=%d tools=%d truncated=%s answerLen=%d totalMs=%d",
+                    iterations, toolCallCount, truncated,
+                    answer == null ? 0 : answer.length(), totalMs);
         }
     }
 

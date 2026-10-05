@@ -1,0 +1,418 @@
+{
+  "_说明": [
+    "评测集：25 道题，每题标好「正确答案应该来自哪几篇文档」。",
+    "",
+    "为什么需要这个：",
+    "  没有评测集 = 只能说「感觉还行」；有了它才能说「Recall@4 从 62% 提到 81%」。",
+    "  这是唯一能量化的「我变强了」的证据，面试时比任何形容词都有说服力。",
+    "",
+    "字段说明：",
+    "  question    —— 模拟用户真实提问（口语化，不是文档里的原句）",
+    "  expectFiles —— 正确答案必须命中这些文件里的片段（= ground truth）",
+    "  keywords    —— 命中片段里应该出现的关键词，用来判「命中的是不是对的段」",
+    "  category    —— 分类，用于分组统计（见下方 category 取值）",
+    "  difficulty  —— easy / medium / hard，hard 是那种需要多轮换词检索的",
+    "",
+    "category 取值：",
+    "  config    配置类（怎么配、改哪个属性）",
+    "  howto     用法类（怎么写代码）",
+    "  concept   概念类（是什么、为什么）",
+    "  compare   对比类（A 和 B 有什么区别）",
+    "",
+    "⚠️ 知识库是英文文档（Spring 官方），所以 keywords 用英文；",
+    "   但用户提问是中文 —— 这正是真实场景（中文问 + 英文库），",
+    "   也正好检验跨语言的向量检索能力。",
+    "⚠️ expectFiles 里的编号必须与 tools/spring-docs/ 的真实文件名一致。第一版评测时凭顺序猜了 12 处编号，导致 Recall 被低估到 52%——**评测集自己的 ground truth 错了，会伪装成系统在犯错**。"
+  ],
+  "questions": [
+    {
+      "id": "Q01",
+      "question": "怎么让 Spring Boot 支持 HTTPS？",
+      "expectFiles": [
+        "004-features-ssl"
+      ],
+      "keywords": [
+        "SSL",
+        "keystore",
+        "trust material",
+        "spring.ssl.bundle"
+      ],
+      "category": "config",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q02",
+      "question": "打包成容器镜像时怎么减小体积？",
+      "expectFiles": [
+        "027-packaging-container-images-efficient-images"
+      ],
+      "keywords": [
+        "efficient",
+        "image",
+        "layer",
+        "jarmode",
+        "docker"
+      ],
+      "category": "howto",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q03",
+      "question": "缓存是怎么工作的？加了 @EnableCaching 之后会发生什么？",
+      "expectFiles": [
+        "025-io-caching"
+      ],
+      "keywords": [
+        "caching",
+        "EnableCaching",
+        "Cache",
+        "interceptor"
+      ],
+      "category": "concept",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q04",
+      "question": "Actuator 里有哪些端点？怎么只暴露 health 和 info？",
+      "expectFiles": [
+        "005-actuator-endpoints"
+      ],
+      "keywords": [
+        "actuator",
+        "endpoints",
+        "exposure",
+        "health",
+        "info"
+      ],
+      "category": "config",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q05",
+      "question": "Spring Boot 怎么接 Kafka 消息？",
+      "expectFiles": [
+        "007-messaging-kafka"
+      ],
+      "keywords": [
+        "kafka",
+        "listener",
+        "consumer",
+        "producer",
+        "spring.kafka"
+      ],
+      "category": "howto",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q06",
+      "question": "profile 怎么用？开发环境和生产环境配置不一样怎么弄？",
+      "expectFiles": [
+        "064-features-profiles"
+      ],
+      "keywords": [
+        "profile",
+        "spring.profiles",
+        "environment"
+      ],
+      "category": "config",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q07",
+      "question": "什么是自动配置？我怎么知道自己项目里启用了哪些自动配置？",
+      "expectFiles": [
+        "042-using-auto-configuration"
+      ],
+      "keywords": [
+        "auto-configuration",
+        "AutoConfiguration",
+        "condition",
+        "report"
+      ],
+      "category": "concept",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q08",
+      "question": "AOT 是什么？原生镜像为什么需要它？",
+      "expectFiles": [
+        "003-packaging-aot-cache",
+        "057-packaging-aot"
+      ],
+      "keywords": [
+        "AOT",
+        "ahead-of-time",
+        "native image",
+        "bean"
+      ],
+      "category": "concept",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q09",
+      "question": "怎么接入 OAuth2 做登录鉴权？",
+      "expectFiles": [
+        "028-security-oauth2"
+      ],
+      "keywords": [
+        "OAuth2",
+        "client registration",
+        "resource server",
+        "authorization"
+      ],
+      "category": "howto",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q10",
+      "question": "SAML2 认证怎么配置？和 OAuth2 有什么区别？",
+      "expectFiles": [
+        "001-security-saml2",
+        "028-security-oauth2"
+      ],
+      "keywords": [
+        "SAML2",
+        "relying party",
+        "assertion",
+        "OAuth2"
+      ],
+      "category": "compare",
+      "difficulty": "hard"
+    },
+    {
+      "id": "Q11",
+      "question": "RestClient 怎么用？和 RestTemplate 有什么区别？",
+      "expectFiles": [
+        "010-io-rest-client"
+      ],
+      "keywords": [
+        "RestClient",
+        "RestTemplate",
+        "retrieve",
+        "exchange"
+      ],
+      "category": "compare",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q12",
+      "question": "定时任务怎么写？能不能用 cron 表达式？",
+      "expectFiles": [
+        "058-features-task-execution-and-scheduling"
+      ],
+      "keywords": [
+        "scheduling",
+        "Scheduled",
+        "cron",
+        "TaskScheduler"
+      ],
+      "category": "howto",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q13",
+      "question": "怎么用 AOP？切面和切点分别指什么？",
+      "expectFiles": [
+        "057-features-aop"
+      ],
+      "keywords": [
+        "AOP",
+        "aspect",
+        "pointcut",
+        "advice",
+        "proxy"
+      ],
+      "category": "concept",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q14",
+      "question": "应用优雅停机怎么实现？",
+      "expectFiles": [
+        "051-web-graceful-shutdown"
+      ],
+      "keywords": [
+        "graceful",
+        "shutdown",
+        "smart",
+        "lifecycle"
+      ],
+      "category": "howto",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q15",
+      "question": "怎么自定义一个 Starter？我想让别人一加依赖就能用我的功能",
+      "expectFiles": [
+        "069-features-developing-auto-configuration"
+      ],
+      "keywords": [
+        "AutoConfiguration",
+        "AutoConfiguration.imports",
+        "starter",
+        "configuration"
+      ],
+      "category": "howto",
+      "difficulty": "hard"
+    },
+    {
+      "id": "Q16",
+      "question": "Actuator 的 health 怎么自定义健康检查？",
+      "expectFiles": [
+        "005-actuator-endpoints"
+      ],
+      "keywords": [
+        "health",
+        "HealthIndicator",
+        "status",
+        "endpoint"
+      ],
+      "category": "howto",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q17",
+      "question": "外部化配置有哪些方式？优先级怎么排？",
+      "expectFiles": [
+        "024-features-external-config"
+      ],
+      "keywords": [
+        "external configuration",
+        "config data",
+        "property source",
+        "profile"
+      ],
+      "category": "config",
+      "difficulty": "hard"
+    },
+    {
+      "id": "Q18",
+      "question": "连接数据库时怎么配置连接池？HikariCP 有哪些可调参数？",
+      "expectFiles": [
+        "038-data-sql"
+      ],
+      "keywords": [
+        "datasource",
+        "Hikari",
+        "pool",
+        "maximum-pool-size",
+        "connection"
+      ],
+      "category": "config",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q19",
+      "question": "怎么写单元测试？@SpringBootTest 和 @WebMvcTest 有什么区别？",
+      "expectFiles": [
+        "021-testing-spring-boot-applications",
+        "014-testing-spring-applications"
+      ],
+      "keywords": [
+        "test",
+        "Test",
+        "context",
+        "slice",
+        "mock"
+      ],
+      "category": "compare",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q20",
+      "question": "Testcontainers 能用来做什么？和 mock 数据库有什么区别？",
+      "expectFiles": [
+        "079-testing-testcontainers"
+      ],
+      "keywords": [
+        "Testcontainers",
+        "container",
+        "integration test",
+        "Docker"
+      ],
+      "category": "compare",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q21",
+      "question": "结构化代码怎么组织？包名有什么约定？",
+      "expectFiles": [
+        "031-using-structuring-your-code"
+      ],
+      "keywords": [
+        "structure",
+        "package",
+        "naming",
+        "main",
+        "configuration"
+      ],
+      "category": "concept",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q22",
+      "question": "怎么用 Bean 和依赖注入？@Autowired 到底做了什么？",
+      "expectFiles": [
+        "073-using-spring-beans-and-dependency-injection"
+      ],
+      "keywords": [
+        "bean",
+        "Autowired",
+        "dependency injection",
+        "container",
+        "lifecycle"
+      ],
+      "category": "concept",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q23",
+      "question": "国际化怎么实现？多语言资源文件放哪？",
+      "expectFiles": [
+        "023-features-internationalization"
+      ],
+      "keywords": [
+        "internationalization",
+        "MessageSource",
+        "locale",
+        "messages"
+      ],
+      "category": "howto",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q24",
+      "question": "可观测性怎么实现？分布式追踪怎么接？",
+      "expectFiles": [
+        "084-actuator-tracing",
+        "083-actuator-observability"
+      ],
+      "keywords": [
+        "tracing",
+        "observability",
+        "micrometer",
+        "span",
+        "correlation"
+      ],
+      "category": "howto",
+      "difficulty": "hard"
+    },
+    {
+      "id": "Q25",
+      "question": "Native Image 用 GraalVM 编译时有什么坑？反射配置怎么写？",
+      "expectFiles": [
+        "032-packaging-native-image-introducing-graalvm-native-images",
+        "082-packaging-native-image-advanced-topics"
+      ],
+      "keywords": [
+        "GraalVM",
+        "native image",
+        "reflection",
+        "configuration",
+        "AOT"
+      ],
+      "category": "howto",
+      "difficulty": "hard"
+    }
+  ]
+}

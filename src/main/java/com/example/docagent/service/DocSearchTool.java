@@ -278,4 +278,56 @@ public class DocSearchTool {
         Object cid = toolContext.getContext().get(CTX_CONVERSATION_ID);
         return cid == null ? null : String.valueOf(cid);
     }
+
+    // ==================================================================
+    // 评测专用：只检索不生成
+    // ==================================================================
+
+    /**
+     * 评测用的检索入口 —— <b>不调大模型，只查向量库</b>
+     *
+     * <h3>为什么必须和 searchSpringDocs 分开</h3>
+     * {@link #searchSpringDocs} 的返回值是<b>拼给模型看的文本</b>，
+     * 格式会为了「让模型好读」而调整；评测要的是<b>结构化的原始结果</b>
+     * （哪一段、来自哪篇、相似度多少），才能算命中率。
+     * <p>
+     * 更重要的是速度：检索一次约 100~300ms，纯检索 25 道题只要几秒；
+     * 走完整问答链路每题十几秒、还要烧 token。评测要能随手跑，就不能慢。
+     *
+     * @param query 检索词
+     * @param topK  取几段。评测里要显式传，因为 topK 直接决定 Recall@K 的 K
+     */
+    public EvalRetrieveResult evalRetrieve(String query, int topK) {
+        long t0 = System.nanoTime();
+        // 查 embedding 要打一次外部 API（硅基流动），这段耗时通常占大头
+        long before = System.nanoTime();
+        List<Document> hits = vectorStore.similaritySearch(
+                SearchRequest.builder().query(query).topK(topK).build());
+        long searchMs = (System.nanoTime() - before) / 1_000_000;
+
+        List<EvalHit> results = new ArrayList<>();
+        if (hits != null) {
+            for (Document doc : hits) {
+                Object title = doc.getMetadata().get("title");
+                results.add(new EvalHit(
+                        title == null ? null : String.valueOf(title),
+                        String.valueOf(doc.getMetadata().getOrDefault("source", "")),
+                        doc.getScore(),
+                        doc.getText() == null ? "" : doc.getText()));
+            }
+        }
+        long totalMs = (System.nanoTime() - t0) / 1_000_000;
+        // 慢在哪要分清：是"打 embedding 接口慢"还是"pgvector 查得慢"，
+        // 优化方向完全不同（前者换/缓存模型，后者调索引）
+        log.info("[EVAL] query={} topK={} hits={} searchMs={} totalMs={}",
+                query, topK, results.size(), searchMs, totalMs);
+        return new EvalRetrieveResult(query, topK, results, searchMs, totalMs);
+    }
+
+    /** 检索结果里的一条命中 */
+    public record EvalHit(String title, String file, Double score, String snippet) {}
+
+    /** 评测检索的返回：带耗时，方便定位瓶颈 */
+    public record EvalRetrieveResult(String query, int topK, List<EvalHit> hits,
+                                     long searchMs, long totalMs) {}
 }

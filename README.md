@@ -1,6 +1,6 @@
 # doc-agent — 基于 Spring AI 的技术文档问答 Agent
 
-> 🆘 **遇到报错先看 [`PITFALLS.md`](PITFALLS.md)** —— 12 个真实踩过的坑，按报错关键字索引。
+> 🆘 **遇到报错先看 [`PITFALLS.md`](PITFALLS.md)** —— 14 个真实踩过的坑，按报错关键字索引。
 > 拿报错里的英文关键词（`ClassCastException` / `model_not_found` / `程序包不存在`…）搜一下就有答案。
 > 其中「坑 1/2/3」是同一家族：**编译通过、单元测试全绿，只有真调模型才炸**，最值得先看。
 
@@ -169,8 +169,31 @@ python tools\check_config.py
 - [x] Tool Use（Function Calling）—— 知识库工具化，从「意图路由」升级为「Agent」
 - [x] 联网搜索（百炼 `enable_search`）—— 实时信息由模型自己决定要不要联网
 - [x] ReAct 推理-行动循环（手写循环，含轮数上限、失败降级、进度事件）
+- [x] 评测集 + 检索准确率（25 题 · Recall@4 = 96%·）+ 可观测 Trace（每轮的检索词、耗时、上下文增长）
 - [ ] MCP Server 化（接入 Claude / Cursor）
-- [ ] 评测集 + 检索准确率、可观测 Trace
+
+## 检索评测（项目的"尺子"）
+
+**没有评测 = 只能说「感觉还行」；有了它才能说「Recall 从 62% 提到 81%」。**
+
+```bash
+python tools/eval/run_eval.py--topk 4       # 25 道题，约 4 秒跑完
+python tools/eval/run_eval.py --show-failed  # 打印失败题的检索明细
+```
+
+当前实测：**Recall@4 = 96%（24/25）· 平均延迟 150ms**。
+
+评测只测**检索层**，且**不调大模型**（走 `GET /api/eval/retrieve`），
+所以是零成本、零延迟的，可以随手跑——这很重要，改完参数立刻能验证。
+
+**Trace**：日志里每轮都会打一行，能看到「第几轮换了什么检索词、上下文涨到多大」：
+
+```
+[TRACE] q=RestClient RestTem it=1 tools=[searchSpringDocs] callMs=474 ctx=17920 fetched=17920
+```
+
+`ctx` 就是 token 成本的直接指标——实测发现**单次检索拉回 17920 字且每轮重复付费**，
+这是比「多迭代几轮」更值得优化的点。详见 [`docs/评测报告.md`](docs/评测报告.md)。
 
 ## 向量库：PostgreSQL + pgvector
 

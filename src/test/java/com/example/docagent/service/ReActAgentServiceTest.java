@@ -239,6 +239,42 @@ class ReActAgentServiceTest {
         assertThat(result.truncated()).isTrue();
     }
 
+    /**
+     * trace 应该逐轮记录「查了什么词、上下文涨到多大」
+     *
+     * <p>trace 是事后定位问题的唯一依据——光看最终答案，
+     * 没法知道「第几轮换了词」「上下文是不是在膨胀」。
+     * 而上下文大小正是 token 成本的直接指标，
+     * 所以这个字段不是日志装饰，是成本优化的依据。
+     */
+    @Test
+    void trace应该逐轮记录检索词与上下文增长() {
+        ScriptedChatModel fakeModel = new ScriptedChatModel();
+        ReActAgentService agent = new ReActAgentService(fakeModel, "qwen-flash", 5, 2);
+
+        ReActAgentService.ReactResult result = agent.run(
+                "你是 Spring 助手", "事务失效", new Object[]{new NoopTool()}, Map.of(), null);
+
+        // 2 轮 = 1 次工具调用 + 1 次收尾
+        assertThat(result.trace()).hasSize(2);
+
+        // 第 1 轮：调了工具，记下了检索词
+        ReActAgentService.TraceStep first = result.trace().get(0);
+        assertThat(first.iteration()).isEqualTo(1);
+        assertThat(first.tools()).contains("searchSpringDocs");
+        assertThat(first.query()).isEqualTo("事务失效");
+        // 工具拿回「【模拟检索结果】事务失效」这 12 个字
+        assertThat(first.fetchedChars()).isPositive();
+
+        // 最后一条是收尾，没有工具调用
+        ReActAgentService.TraceStep last = result.trace().get(1);
+        assertThat(last.tools()).isEqualTo("answer");
+
+        // 上下文必须逐轮不减（这是成本失控的早期信号）
+        assertThat(last.contextChars()).isGreaterThanOrEqualTo(first.contextChars());
+        assertThat(result.totalMs()).isNotNegative();
+    }
+
     /** 模型一直要工具时，应该撞上轮数上限并强制收尾，而不是无限循环 */
     @Test
     void 撞上轮数上限应该强制收尾() {
